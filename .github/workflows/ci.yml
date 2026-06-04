@@ -17,7 +17,7 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions: {}
     steps:
       - name: Harden runner
@@ -31,7 +31,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
@@ -40,3 +42,15 @@ jobs:
         run: |
           rustc --version
           cargo --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Smoke test CLI
+        run: cargo run --locked -p meerkat -- --help
