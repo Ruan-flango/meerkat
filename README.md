@@ -19,7 +19,7 @@ Core libraries for the Meerkat runtime:
 
 We use [`pre-commit`](https://pre-commit.com/) to ensure code quality.
 
-1. **Install pre-commit:** Run `pip install pre-commit` or `brew install pre-commit` (see [installation guide](https://pre-commit.com/#install)).
+1. **Install pre-commit:** Run `sudo apt install pre-commit` or `pip install pre-commit` or `brew install pre-commit` (see [installation guide](https://pre-commit.com/#install)).
 2. **Set up hooks:** Run `pre-commit install` in the repository root before submitting a pull request.
 
 ```bash
