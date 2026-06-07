@@ -3,9 +3,13 @@ import json
 import sys
 import re
 
-def run_cmd(args):
-    proc = subprocess.run(args, capture_output=True, text=True)
-    return proc.returncode, proc.stdout, proc.stderr
+def run_cmd(args, timeout=30):
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as e:
+        print(f"\nFAIL: Command timed out after {timeout} seconds: {' '.join(args)}")
+        return -1, (e.stdout or b"").decode(errors="replace"), (e.stderr or b"").decode(errors="replace")
 
 def run_basic_test():
     print("Running Test 1: mkn_basic_topology...")
