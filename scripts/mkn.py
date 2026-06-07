@@ -153,6 +153,8 @@ class Manifest:
             # file / cmd check
             if "file" not in node_def and "cmd" not in node_def:
                 raise ValueError(f"Node '{alias}' must specify either 'file' or 'cmd'")
+            if "file" in node_def and "cmd" in node_def:
+                raise ValueError(f"Node '{alias}' cannot specify both 'file' and 'cmd'")
             if "file" in node_def and not isinstance(node_def["file"], str):
                 raise ValueError(f"Node '{alias}' 'file' must be a string")
             if "cmd" in node_def:
