@@ -29,7 +29,7 @@ network:
   - dotnet
 
 safe-outputs:
-  max-patch-size: 20480
+  max-patch-size: 10240
   add-comment:
     max: 8
     target: "*"
