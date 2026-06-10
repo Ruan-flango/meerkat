@@ -633,6 +633,17 @@ mod tests {
         manager
     }
 
+    fn x_state(manager: &Manager) -> &VarState {
+        manager.services.get("foo").unwrap().vars.get("x").unwrap()
+    }
+
+    fn assert_x_unlocked(manager: &Manager) {
+        assert!(matches!(
+            &x_state(manager).lock,
+            crate::runtime::txn::VarLock::Unlocked
+        ));
+    }
+
     // x = x + 1 reads x (read lock) then writes x (must upgrade to write lock).
     // This is the read-then-write pattern that the old upfront analysis mishandled.
     #[tokio::test]
@@ -685,8 +696,26 @@ mod tests {
             },
         ];
         manager.execute_action("foo", &stmts).await.unwrap();
-        let lock = &manager.services.get("foo").unwrap().vars.get("x").unwrap().lock;
-        assert!(matches!(lock, crate::runtime::txn::VarLock::Unlocked));
+        assert_x_unlocked(&manager);
+    }
+
+    // A successful transaction commits its buffered write and records the
+    // transaction as the latest writer for that variable.
+    #[tokio::test]
+    async fn test_txn_successful_write_updates_value_and_latest_write_txn() {
+        let mut manager = manager_with_x().await;
+        let stmts = vec![
+            ActionStmt::Assign {
+                var: "x".to_string(),
+                expr: Expr::Literal { val: Value::Number { val: 42 } },
+            },
+        ];
+
+        manager.execute_action("foo", &stmts).await.unwrap();
+
+        let state = x_state(&manager);
+        assert_eq!(state.value, Value::Number { val: 42 });
+        assert!(state.latest_write_txn.is_some());
     }
 
     // A nested `do` (an action invoking another action) must reuse the same
@@ -714,8 +743,7 @@ mod tests {
         let result = manager.lookup("x", "foo", None).await.unwrap();
         assert_eq!(result, Value::Number { val: 1 });
         // and the lock was released
-        let lock = &manager.services.get("foo").unwrap().vars.get("x").unwrap().lock;
-        assert!(matches!(lock, crate::runtime::txn::VarLock::Unlocked));
+        assert_x_unlocked(&manager);
     }
 
     // A transaction that fails partway must leave no partial writes: writes are
@@ -737,7 +765,54 @@ mod tests {
         let x = manager.lookup("x", "foo", None).await.unwrap();
         assert_eq!(x, Value::Number { val: 0 });
         // and the lock was released
-        let lock = &manager.services.get("foo").unwrap().vars.get("x").unwrap().lock;
-        assert!(matches!(lock, crate::runtime::txn::VarLock::Unlocked));
+        assert_x_unlocked(&manager);
+    }
+
+    // A failed transaction must not update either committed state field: the
+    // value and latest writer should remain from the last successful commit.
+    #[tokio::test]
+    async fn test_txn_failed_transaction_preserves_previous_latest_write_txn() {
+        let mut manager = manager_with_x().await;
+        let successful_write = vec![
+            ActionStmt::Assign {
+                var: "x".to_string(),
+                expr: Expr::Literal { val: Value::Number { val: 1 } },
+            },
+        ];
+        manager.execute_action("foo", &successful_write).await.unwrap();
+        let previous_txn = x_state(&manager).latest_write_txn.clone();
+        assert!(previous_txn.is_some());
+
+        let failing_write = vec![
+            ActionStmt::Assign {
+                var: "x".to_string(),
+                expr: Expr::Literal { val: Value::Number { val: 99 } },
+            },
+            ActionStmt::Assert(Expr::Literal { val: Value::Bool { val: false } }),
+        ];
+
+        let result = manager.execute_action("foo", &failing_write).await;
+
+        assert!(result.is_err());
+        let state = x_state(&manager);
+        assert_eq!(state.value, Value::Number { val: 1 });
+        assert_eq!(state.latest_write_txn, previous_txn);
+        assert_x_unlocked(&manager);
+    }
+
+    // If a transaction fails after a read, its read lock must still be released.
+    #[tokio::test]
+    async fn test_txn_read_lock_released_after_failure() {
+        let mut manager = manager_with_x().await;
+        let stmts = vec![
+            ActionStmt::Assert(Expr::Variable { ident: "x".to_string() }),
+        ];
+
+        let result = manager.execute_action("foo", &stmts).await;
+
+        assert!(result.is_err());
+        assert_eq!(x_state(&manager).value, Value::Number { val: 0 });
+        assert!(x_state(&manager).latest_write_txn.is_none());
+        assert_x_unlocked(&manager);
     }
 }
