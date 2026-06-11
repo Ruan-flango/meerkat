@@ -229,3 +229,193 @@ impl Transaction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn txn(n: u128) -> TxnId {
+        TxnId {
+            timestamp: n,
+            node_id: 1,
+            iteration: 0,
+        }
+    }
+
+    fn assert_unlocked(lock: &VarLock) {
+        assert!(matches!(lock, VarLock::Unlocked));
+    }
+
+    fn assert_readers(lock: &VarLock, expected: &[TxnId]) {
+        match lock {
+            VarLock::ReadLocked(readers) => {
+                assert_eq!(readers.len(), expected.len());
+                for txn_id in expected {
+                    assert!(readers.contains(txn_id));
+                }
+            }
+            other => panic!("expected read lock, got {:?}", other),
+        }
+    }
+
+    fn assert_writer(lock: &VarLock, expected: &TxnId) {
+        assert!(matches!(lock, VarLock::WriteLocked(owner) if owner == expected));
+    }
+
+    #[test]
+    fn test_unlocked_accepts_read_lock() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn_id));
+        assert_readers(&lock, &[txn_id]);
+    }
+
+    #[test]
+    fn test_unlocked_accepts_write_lock() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&txn_id));
+        assert_writer(&lock, &txn_id);
+    }
+
+    #[test]
+    fn test_multiple_read_locks_can_coexist() {
+        let txn1 = txn(1);
+        let txn2 = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn1));
+        assert!(lock.try_read(&txn2));
+        assert_readers(&lock, &[txn1, txn2]);
+    }
+
+    #[test]
+    fn test_write_lock_blocks_read_lock_from_another_transaction() {
+        let writer = txn(1);
+        let reader = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&writer));
+        assert!(!lock.try_read(&reader));
+        assert_writer(&lock, &writer);
+    }
+
+    #[test]
+    fn test_read_lock_blocks_write_lock_from_another_transaction() {
+        let reader = txn(1);
+        let writer = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&reader));
+        assert!(!lock.try_write(&writer));
+        assert_readers(&lock, &[reader]);
+    }
+
+    #[test]
+    fn test_releasing_one_of_multiple_read_locks_keeps_remaining_read_lock() {
+        let txn1 = txn(1);
+        let txn2 = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn1));
+        assert!(lock.try_read(&txn2));
+        lock.release(&txn1);
+
+        assert_readers(&lock, &[txn2]);
+    }
+
+    #[test]
+    fn test_releasing_last_read_lock_unlocks() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn_id));
+        lock.release(&txn_id);
+
+        assert_unlocked(&lock);
+    }
+
+    #[test]
+    fn test_releasing_write_lock_unlocks() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&txn_id));
+        lock.release(&txn_id);
+
+        assert_unlocked(&lock);
+    }
+
+    #[test]
+    fn test_releasing_read_lock_with_wrong_transaction_id_does_not_unlock() {
+        let owner = txn(1);
+        let wrong_txn = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&owner));
+        lock.release(&wrong_txn);
+
+        assert_readers(&lock, &[owner]);
+    }
+
+    #[test]
+    fn test_releasing_write_lock_with_wrong_transaction_id_does_not_unlock() {
+        let owner = txn(1);
+        let wrong_txn = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&owner));
+        lock.release(&wrong_txn);
+
+        assert_writer(&lock, &owner);
+    }
+
+    #[test]
+    fn test_sole_reader_can_upgrade_to_write_lock() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn_id));
+        assert!(lock.upgrade_to_write(&txn_id));
+
+        assert_writer(&lock, &txn_id);
+    }
+
+    #[test]
+    fn test_reader_cannot_upgrade_when_other_readers_exist() {
+        let txn1 = txn(1);
+        let txn2 = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn1));
+        assert!(lock.try_read(&txn2));
+        assert!(!lock.upgrade_to_write(&txn1));
+
+        assert_readers(&lock, &[txn1, txn2]);
+    }
+
+    #[test]
+    fn test_write_lock_upgrade_is_idempotent_for_owner() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&txn_id));
+        assert!(lock.upgrade_to_write(&txn_id));
+
+        assert_writer(&lock, &txn_id);
+    }
+
+    #[test]
+    fn test_wrong_transaction_cannot_upgrade_write_lock() {
+        let owner = txn(1);
+        let wrong_txn = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&owner));
+        assert!(!lock.upgrade_to_write(&wrong_txn));
+
+        assert_writer(&lock, &owner);
+    }
+}
