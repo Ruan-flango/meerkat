@@ -394,16 +394,22 @@ impl NetworkActor {
         if swarm.is_connected(&peer_id) {
             Self::send_to_peer(control, peer_id, msg_id, msg, event_tx).await;
         } else {
+            // Track if we are already dialing this peer to prevent duplicate dials
+            let is_dialing = pending_sends.contains_key(&peer_id);
             pending_sends
                 .entry(peer_id)
                 .or_default()
                 .push((msg_id, msg));
-            if let Err(e) = swarm.dial(multiaddr) {
-                let _ = event_tx.send(NetworkEvent::SendFailed {
-                    msg_id,
-                    error: SendError::ProtocolError(format!("Dial failed: {:?}", e)),
-                });
-                pending_sends.remove(&peer_id);
+
+            if !is_dialing {
+                // Dial the target peer since no active dial request exists
+                if let Err(e) = swarm.dial(multiaddr) {
+                    let _ = event_tx.send(NetworkEvent::SendFailed {
+                        msg_id,
+                        error: SendError::ProtocolError(format!("Dial failed: {:?}", e)),
+                    });
+                    pending_sends.remove(&peer_id);
+                }
             }
         }
     }

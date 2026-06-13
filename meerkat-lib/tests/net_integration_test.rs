@@ -114,17 +114,17 @@ async fn test_multiple_messages() {
     }
 
     let mut received = 0;
-    for _ in 0..100 {
-        sleep(Duration::from_millis(100)).await;
-        while let Ok(event) = server.event_rx.try_recv() {
+    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        while let Some(event) = server.event_rx.recv().await {
             if let NetworkEvent::MessageReceived { .. } = event {
                 received += 1;
+                if received >= 5 {
+                    break;
+                }
             }
         }
-        if received >= 5 {
-            break;
-        }
-    }
+    })
+    .await;
 
     assert_eq!(
         received, 5,
