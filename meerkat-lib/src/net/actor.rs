@@ -491,6 +491,32 @@ impl NetworkActor {
                 }
                 //println!("Identify event: {:?}", event);
             }
+            libp2p::swarm::SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                // Resolve any pending relay dial so the caller is not left waiting
+                if let Some((_, reply_tx)) = pending_relay.take() {
+                    let _ = reply_tx.send(Err(format!("Relay dial failed: {:?}", error)));
+                }
+
+                // Emit `SendFailed` for any messages queued for this peer and clean up
+                if let Some(peer_id) = peer_id {
+                    if let Some(messages) = pending_sends.remove(&peer_id) {
+                        for (msg_id, _) in messages {
+                            let _ = event_tx.send(NetworkEvent::SendFailed {
+                                msg_id,
+                                error: SendError::ProtocolError(format!(
+                                    "Outgoing connection failed: {:?}",
+                                    error
+                                )),
+                            });
+                        }
+                    }
+                }
+            }
+            libp2p::swarm::SwarmEvent::ListenerError { error, .. } => {
+                if let Some(tx) = pending_listen.take() {
+                    let _ = tx.send(Err(format!("Listener error: {:?}", error)));
+                }
+            }
             _ => {}
         }
     }

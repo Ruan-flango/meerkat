@@ -324,7 +324,7 @@ async fn test_circuit_relay() {
     use std::time::Duration;
     use tokio::time::sleep;
 
-    // ── Step 1: Start relay server ────────────────────────────────────────────
+    // Start relay server
     let mut relay_server = NetworkActor::new(NodeType::Server).await.unwrap();
 
     let relay_listen_reply = relay_server
@@ -335,7 +335,7 @@ async fn test_circuit_relay() {
 
     let relay_addr = match relay_listen_reply {
         NetworkReply::ListenSuccess { addr } => addr,
-        other => panic!("Relay listen failed: {:?}", other),
+        other => panic!("relay listen failed: {:?}", other),
     };
 
     let relay_full_addr = Address::new(format!(
@@ -343,16 +343,14 @@ async fn test_circuit_relay() {
         relay_addr.0,
         relay_server.local_peer_id()
     ));
-    println!("Relay server address: {}", relay_full_addr.0);
+    println!("relay server: {}", relay_full_addr.0);
 
-    // ── Step 2: Start client2, get circuit relay address ─────────────────────
+    // Start `client2` and register circuit relay reservation
     let mut client2 = NetworkActor::new(NodeType::BrowserClient {
         relay_server: relay_full_addr.clone(),
     })
     .await
     .unwrap();
-
-    let _client2_peer_id = client2.local_peer_id();
 
     let circuit_reply = client2
         .handle_command(NetworkCommand::ListenViaRelay {
@@ -362,76 +360,147 @@ async fn test_circuit_relay() {
 
     let client2_circuit_addr = match circuit_reply {
         NetworkReply::ListenSuccess { addr } => addr,
-        other => panic!("Circuit relay listen failed: {:?}", other),
+        other => panic!("`ListenViaRelay` failed: {:?}", other),
     };
 
-    println!("client2 circuit relay address: {}", client2_circuit_addr.0);
+    println!("client2 circuit addr: {}", client2_circuit_addr.0);
     assert!(
         client2_circuit_addr.0.contains("p2p-circuit"),
-        "Expected circuit relay address, got: {}",
+        "expected circuit relay address, got: {}",
         client2_circuit_addr.0
     );
 
-    // Wait for relay server to confirm reservation before client1 dials through it
-    sleep(Duration::from_secs(2)).await;
-    while let Ok(e) = relay_server.event_rx.try_recv() {
-        println!("relay server event (pre-send): {:?}", e);
+    // Wait for relay server to confirm `client2` connection before `client1` dials
+    let mut client2_connected = false;
+    for _ in 0..50 {
+        while let Ok(e) = relay_server.event_rx.try_recv() {
+            println!("relay server: {:?}", e);
+            if let NetworkEvent::PeerConnected { peer } = &e {
+                if *peer == client2.local_peer_id() {
+                    client2_connected = true;
+                }
+            }
+        }
+        if client2_connected {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
     }
-    println!("Starting client1 send...");
+    assert!(
+        client2_connected,
+        "`client2` never connected to the relay server"
+    );
 
-    // ── Step 3: Start client1, also a relay client (needs relay transport to dial circuit addrs)
+    // Start `client1` and send to `client2` through the relay.
+    // `client1` does not auto-dial the relay on creation; the relay transport
+    // connects as part of dialling the circuit address in `SendMessage`
     let mut client1 = NetworkActor::new(NodeType::BrowserClient {
         relay_server: relay_full_addr.clone(),
     })
     .await
     .unwrap();
 
-    // Wait for client1 to finish identify with relay before sending via circuit
-    sleep(Duration::from_secs(3)).await;
+    // Retry send with a hard 10-second timeout (5 attempts x 10 polls x 100ms)
+    let received = tokio::time::timeout(Duration::from_secs(10), async {
+        for attempt in 0..5usize {
+            client1
+                .handle_command(NetworkCommand::SendMessage {
+                    addr: client2_circuit_addr.clone(),
+                    msg: MeerkatMessage::Ping {
+                        content: "hello via relay".to_string(),
+                    },
+                })
+                .await;
 
-    client1
-        .handle_command(NetworkCommand::SendMessage {
-            addr: client2_circuit_addr.clone(),
-            msg: MeerkatMessage::Ping {
-                content: "hello via relay".to_string(),
-            },
-        })
-        .await;
+            for _ in 0..10usize {
+                sleep(Duration::from_millis(100)).await;
 
-    // ── Step 4: Poll until client2 receives the message ──────────────────────
-    let mut received = false;
-    for _ in 0..300 {
-        sleep(Duration::from_millis(200)).await;
+                while let Ok(e) = client2.event_rx.try_recv() {
+                    println!("client2: {:?}", e);
+                    if let NetworkEvent::MessageReceived {
+                        msg: MeerkatMessage::Ping { content },
+                        ..
+                    } = e
+                    {
+                        if content == "hello via relay" {
+                            return true;
+                        }
+                    }
+                }
 
-        while let Ok(e) = client2.event_rx.try_recv() {
-            println!("client2 got: {:?}", e);
-            if let NetworkEvent::MessageReceived {
-                msg: MeerkatMessage::Ping { content },
-                ..
-            } = e
-            {
-                if content == "hello via relay" {
-                    received = true;
+                // Drain other queues to keep event loops responsive
+                while let Ok(e) = relay_server.event_rx.try_recv() {
+                    println!("relay server: {:?}", e);
+                }
+                while let Ok(e) = client1.event_rx.try_recv() {
+                    println!("client1: {:?}", e);
                 }
             }
+            println!("attempt {} failed, retrying", attempt + 1);
         }
-
-        while let Ok(e) = relay_server.event_rx.try_recv() {
-            println!("relay server event: {:?}", e);
-        }
-
-        while let Ok(e) = client1.event_rx.try_recv() {
-            println!("client1 event: {:?}", e);
-        }
-
-        if received {
-            break;
-        }
-    }
+        false
+    })
+    .await
+    .unwrap_or(false);
 
     assert!(
         received,
         "client2 never received the message via circuit relay"
     );
-    println!("✓ Circuit relay test passed!");
+
+    // Send to a peer not registered with the relay; the relay rejects the circuit,
+    // producing `OutgoingConnectionError`. Verify `SendFailed` is emitted
+    let fake_peer = Address::new(format!(
+        "{}/p2p-circuit/p2p/12D3KooW8Zr3nQ7mL4xK9vJ2pY6sF1gT5hR",
+        relay_full_addr.0,
+    ));
+    client1
+        .handle_command(NetworkCommand::SendMessage {
+            addr: fake_peer,
+            msg: MeerkatMessage::Ping {
+                content: "should fail".to_string(),
+            },
+        })
+        .await;
+
+    let send_failed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            while let Ok(e) = client1.event_rx.try_recv() {
+                if matches!(e, NetworkEvent::SendFailed { .. }) {
+                    return true;
+                }
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(
+        send_failed,
+        "`SendFailed` not received after `OutgoingConnectionError`"
+    );
+
+    // Verify `ListenViaRelay` on an unreachable relay returns `Failure` promptly
+    let dead_relay = Address::new("/ip4/127.0.0.1/tcp/19998/p2p/12D3KooW4nR7qL2mK8vJ3pY9sF6gT1hX");
+    let mut orphan = NetworkActor::new(NodeType::BrowserClient {
+        relay_server: dead_relay.clone(),
+    })
+    .await
+    .unwrap();
+
+    let relay_reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        orphan.handle_command(NetworkCommand::ListenViaRelay {
+            relay_addr: dead_relay,
+        }),
+    )
+    .await
+    .expect("`ListenViaRelay` on unreachable relay must not hang");
+
+    assert!(
+        matches!(relay_reply, NetworkReply::Failure(_)),
+        "`ListenViaRelay` on unreachable relay returned {:?}, expected `Failure`",
+        relay_reply
+    );
+    println!("circuit relay test passed");
 }
