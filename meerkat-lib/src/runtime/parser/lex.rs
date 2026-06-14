@@ -10,7 +10,7 @@
 #![allow(clippy::upper_case_acronyms)]
 use enum_as_inner::EnumAsInner;
 use logos::{Lexer, Logos, Skip};
-use std::{fmt, num::ParseIntError};
+use std::fmt;
 use strum_macros::AsRefStr;
 
 fn from_num<'b>(lex: &mut Lexer<'b, Token<'b>>) -> Result<i32, String> {
@@ -19,11 +19,11 @@ fn from_num<'b>(lex: &mut Lexer<'b, Token<'b>>) -> Result<i32, String> {
     let res = slice.parse();
 
     if res.is_err() {
-        return Err(format!("Parsing failed wtih Error {:?}", res.unwrap_err()));
+        return Err(format!("Parsing failed with Error {:?}", res.unwrap_err()));
     }
     let out: i64 = res.unwrap();
     if out > ((i32::MIN as i64).abs()) {
-        // All numbers are positive because - is lexed seperately
+        // All numbers are positive because - is lexed separately
         return Err(format!("Number {} is out of bounds", out));
     }
 
@@ -78,10 +78,10 @@ impl<'a> fmt::Display for Token<'a> {
 #[derive(Clone, Logos, Debug, PartialEq, AsRefStr, EnumAsInner)]
 #[logos(subpattern identifier = r"[A-Za-z_][A-Za-z0-9_]*")]
 pub enum Token<'a> {
-  #[regex(r#""[^"]*""#, |lex| lex.slice().trim_matches('"'))] // regex for string within ""
-  StrLit(&'a str),
-  #[regex(r"(?&identifier)")]
-  Ident(&'a str),
+    #[regex(r#""[^"]*""#, |lex| lex.slice().trim_matches('"'))] // regex for string within ""
+    StrLit(&'a str),
+    #[regex(r"(?&identifier)")]
+    Ident(&'a str),
 
     #[regex(r"0|[1-9][0-9]*", from_num)]
     Number(i32),
@@ -116,87 +116,87 @@ pub enum Token<'a> {
     OR_OR,
     #[token("!")]
     NOT_NOT,
-  
-  //Punctuation
-  #[token("(")]
-  LParen,
-  #[token(")")]
-  RParen,
-  #[token("{")]
-  LBrace,
-  #[token("}")]
-  RBrace,
-  #[token("[")]
-  LSquare,
-  #[token("]")]
-  RSquare,
-  #[token(";")]
-  Semicolon,
-  #[token(",")]
-  Comma,
-  #[token(":")]
-  Colon,
-  #[token(".")]
-  Dot,
 
-  // Reserved Keywords
-  #[token("service")]
-  SERVICE,
-  #[token("@test")]
-  TEST_KW,
-  #[token("do")]
-  DO_KW,
-  #[token("assert")]
-  ASSERT_KW,
-  #[token("import")]
-  IMPORT_KW,
-  #[token("var")]
-  VAR_KW,
-  #[token("pub")]
-  PUB_KW,
-  #[token("def")]
-  DEF_KW,
-  #[token("table")]
-  TABLE_KW,
-  #[token("insert")]
-  INSERT_KW,
-  #[token("select")]
-  SELECT_KW,
-  #[token("from")]
-  FROM_KW,
-  #[token("where")]
-  WHERE_KW,
-  #[token("into")]
-  INTO_KW,
-  #[token("fold")]
-  FOLD_KW,
-  #[token("action")]
-  ACTION_KW,
-  #[token("fn")]
-  FN_KW,
-  #[token("then")]
-  THEN_KW,
-  #[token("if")]
-  IF_KW,
-  #[token("else")]
-  ELSE_KW,
-  #[token("number")]
-  NUMBER_KW,
-  #[token("string")]
-  STRING_KW,
-  #[token("bool")]
-  BOOL_KW,
-  #[token("let")]
-  LET_KW,
-  #[token("watch")]
-  WATCH_KW,
+    //Punctuation
+    #[token("(")]
+    LParen,
+    #[token(")")]
+    RParen,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
+    #[token("[")]
+    LSquare,
+    #[token("]")]
+    RSquare,
+    #[token(";")]
+    Semicolon,
+    #[token(",")]
+    Comma,
+    #[token(":")]
+    Colon,
+    #[token(".")]
+    Dot,
+
+    // Reserved Keywords
+    #[token("service")]
+    SERVICE,
+    #[token("@test")]
+    TEST_KW,
+    #[token("do")]
+    DO_KW,
+    #[token("assert")]
+    ASSERT_KW,
+    #[token("import")]
+    IMPORT_KW,
+    #[token("var")]
+    VAR_KW,
+    #[token("pub")]
+    PUB_KW,
+    #[token("def")]
+    DEF_KW,
+    #[token("table")]
+    TABLE_KW,
+    #[token("insert")]
+    INSERT_KW,
+    #[token("select")]
+    SELECT_KW,
+    #[token("from")]
+    FROM_KW,
+    #[token("where")]
+    WHERE_KW,
+    #[token("into")]
+    INTO_KW,
+    #[token("fold")]
+    FOLD_KW,
+    #[token("action")]
+    ACTION_KW,
+    #[token("fn")]
+    FN_KW,
+    #[token("then")]
+    THEN_KW,
+    #[token("if")]
+    IF_KW,
+    #[token("else")]
+    ELSE_KW,
+    #[token("number")]
+    NUMBER_KW,
+    #[token("string")]
+    STRING_KW,
+    #[token("bool")]
+    BOOL_KW,
+    #[token("let")]
+    LET_KW,
+    #[token("watch")]
+    WATCH_KW,
 
     #[regex(r"\s*", logos::skip)]
     #[regex(r#"(//)[^\n]*"#, logos::skip)] // Regex for a single line comment
     // Yes there is regex for this no I could not get it to work
     #[token("/*", skip_multi_line_comments)] // Match start of multiline
     Comment,
-    
+
     #[error]
     #[regex(r#"[^\x00-\x7F]"#)] // Error on non ascii characters
     Error,

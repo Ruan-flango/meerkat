@@ -1,0 +1,14 @@
+import s2
+
+service s1 {
+    var x = 0;
+    pub def update_chain = action {
+        x = x + 1;
+        do s2.update;
+    };
+}
+
+@test(s1) {
+    do update_chain;
+    assert(x == 1);
+}

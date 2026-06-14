@@ -1,5 +1,5 @@
+use crate::net::ServiceId;
 use std::fmt::Display;
-//use crate::runtime::Manager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum UnOp {
@@ -24,32 +24,40 @@ pub enum BinOp {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ActionStmt {
-    Let {
-        name: String,
-        expr: Expr,
-    },
+    Let { name: String, expr: Expr },
     Expr(Expr),
     Do(Expr),
     Assert(Expr),
-    Assign {
-        var: String,
-        expr: Expr,
-    },
-    Insert {
-        row: Expr,
-        table_name: String,
-    },
+    Assign { var: String, expr: Expr },
+    Insert { row: Expr, table_name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Stmt {
     ActionStmt(ActionStmt),
-    Update { service: String, decls: Vec<Decl> },
-    Connect { path: String, addr: String },
-    Import { path: String, service: String },
-    Service { name: String, decls: Vec<Decl> },
-    Test { service: String, stmts: Vec<ActionStmt> },
-    Watch { expr: Expr },
+    Update {
+        service: String,
+        decls: Vec<Decl>,
+    },
+    Connect {
+        path: String,
+        addr: String,
+    },
+    Import {
+        path: String,
+        service: String,
+    },
+    Service {
+        name: String,
+        decls: Vec<Decl>,
+    },
+    Test {
+        service: String,
+        stmts: Vec<ActionStmt>,
+    },
+    Watch {
+        expr: Expr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -72,7 +80,10 @@ pub enum Value {
     ActionClosure {
         stmts: Vec<ActionStmt>,
         env: Vec<(String, Value)>,
-        service_name: String,
+        /// Identity of the service this action belongs to. Carries the owning
+        /// node's address, so the action can be executed even if its service is
+        /// not imported into the scope where the closure is later used.
+        service: ServiceId,
     },
 }
 
@@ -86,9 +97,10 @@ pub enum Expr {
         ident: String,
     },
     Tuple {
-        val: Vec<Expr>
+        val: Vec<Expr>,
     },
-    KeyVal {    // TODO: replace with a Record type (different from Tuple) that is a list of key value pairs
+    KeyVal {
+        // TODO: replace with a Record type (different from Tuple) that is a list of key value pairs
         key: String,
         value: Box<Expr>,
     },
@@ -130,20 +142,21 @@ pub enum Expr {
         where_clause: Box<Expr>,
     },
 
-    Table { // TODO: remove this, we should just have Records and Tuples
+    Table {
+        // TODO: remove this, we should just have Records and Tuples
         schema: Vec<Field>,
         records: Vec<Expr>,
         /*How do records differ from rows?
-          Records only consist of data contained within tables: {1, "A", 18}
-          Rows are what are written inside insert statements, insert {id: 1, name: "A", age: 18};
-         */
+         Records only consist of data contained within tables: {1, "A", 18}
+         Rows are what are written inside insert statements, insert {id: 1, name: "A", age: 18};
+        */
     },
     Fold {
         table_name: String,
         column_name: String,
         operation: Box<Expr>,
         identity: Box<Expr>,
-    }
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -207,10 +220,14 @@ impl Display for Value {
             Value::Number { val } => write!(f, "{}", val),
             Value::Bool { val } => write!(f, "{}", val),
             Value::String { val } => write!(f, "\"{}\"", val),
-            Value::Closure { params, body, env, service_name } =>
-                write!(f, "fn({})[{:?}]{{{}}}", params.join(","), env, body),
-            Value::ActionClosure { stmts, env, service_name } =>
-                write!(f, "action[{:?}][{}]{{{:?}}}", env, service_name, stmts),  
+            Value::Closure {
+                params, body, env, ..
+            } => write!(f, "fn({})[{:?}]{{{}}}", params.join(","), env, body),
+            Value::ActionClosure {
+                stmts,
+                env,
+                service,
+            } => write!(f, "action[{:?}][{}]{{{:?}}}", env, service.0, stmts),
         }
     }
 }
@@ -219,7 +236,7 @@ impl Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::Literal { val } => write!(f, "{}", val),
-            Expr::Tuple { val } => write!(f, "vector"),
+            Expr::Tuple { .. } => write!(f, "vector"),
             Expr::KeyVal { key, value } => write!(f, "keyval: {}, {}", key, value),
             Expr::Variable { ident } => write!(f, "{}", ident),
             Expr::Unop { op, expr } => write!(f, "{}{}", op, expr),
@@ -228,22 +245,27 @@ impl Display for Expr {
                 write!(f, "if {} then {} else {}", cond, expr1, expr2)
             }
             Expr::Func { params, body } => write!(f, "fn({})[{}]", params.join(","), body),
-            Expr::Call { func, args } =>
-                write!(
-                    f,
-                    "{}({})",
-                    func,
-                    args.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
-                ),
-            Expr::Action(stmts) =>
-                write!(
-                    f,
-                    "Action({:?})",
-                    stmts.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
-                ),
+            Expr::Call { func, args } => write!(
+                f,
+                "{}({})",
+                func,
+                args.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Expr::Action(stmts) => write!(
+                f,
+                "Action({:?})",
+                stmts
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Expr::MemberAccess { service, member } => write!(f, "{}.{}", service, member),
-            Expr::Select { table_name, column_names, where_clause } => write!(f, "{}", where_clause),
-            Expr::Table {records , ..} => {
+            Expr::Select { where_clause, .. } => write!(f, "{}", where_clause),
+            Expr::Table { records, .. } => {
                 write!(f, "[",)?;
                 for (i, record) in records.iter().enumerate() {
                     if i > 0 {
@@ -254,20 +276,20 @@ impl Display for Expr {
                         Expr::Tuple { val } => {
                             for (j, entry) in val.iter().enumerate() {
                                 if j > 0 {
-                                write!(f, ", ")?;
+                                    write!(f, ", ")?;
                                 }
                                 write!(f, "{}", entry)?;
                             }
-                        },
+                        }
                         other => {
                             write!(f, "{}", other)?;
                         }
                     }
-                write!(f, "}}")?;
+                    write!(f, "}}")?;
+                }
+                write!(f, "]")
             }
-            write!(f, "]")
-            },
-            Expr::Fold { .. } => write!(f, "fold")
+            Expr::Fold { .. } => write!(f, "fold"),
         }
     }
 }
@@ -280,7 +302,9 @@ impl Display for ActionStmt {
             ActionStmt::Do(expr) => write!(f, "do {}", expr),
             ActionStmt::Assert(expr) => write!(f, "assert {}", expr),
             ActionStmt::Assign { var, expr } => write!(f, "{} = {}", var, expr),
-            ActionStmt::Insert { row, table_name } => write!(f, "insert into {} {}", table_name, row),
+            ActionStmt::Insert { row, table_name } => {
+                write!(f, "insert into {} {}", table_name, row)
+            }
         }
     }
 }
@@ -288,16 +312,19 @@ impl Display for ActionStmt {
 impl Display for Decl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Decl::VarDecl { name, val } => { write!(f, "var {} = {}", name, val) },
+            Decl::VarDecl { name, val } => {
+                write!(f, "var {} = {}", name, val)
+            }
             Decl::DefDecl { name, val, is_pub } => {
                 if *is_pub {
                     write!(f, "pub def {} = {}", name, val)
                 } else {
                     write!(f, "def {} = {}", name, val)
                 }
-            },
-            Decl::TableDecl { name, fields } => { write!(f, "table {} created", name) }
+            }
+            Decl::TableDecl { name, .. } => {
+                write!(f, "table {} created", name)
+            }
         }
     }
 }
-

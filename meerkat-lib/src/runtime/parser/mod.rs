@@ -34,8 +34,8 @@ pub mod parser {
     }
 
     pub fn parse_file(filename: &str) -> Result<Vec<Stmt>, String> {
-        let content = std::fs::read_to_string(filename)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
+        let content =
+            std::fs::read_to_string(filename).map_err(|e| format!("Failed to read file: {}", e))?;
         parse_string(&content)
     }
 

@@ -97,7 +97,7 @@ impl MockNetwork {
                             let _ = tx.send(NetworkEvent::SendFailed {
                                 msg_id,
                                 error: SendError::ProtocolError(
-                                    "No peer ID in address".to_string()
+                                    "No peer ID in address".to_string(),
                                 ),
                             });
                         }
@@ -110,11 +110,9 @@ impl MockNetwork {
             NetworkCommand::ListenViaRelay { .. } => {
                 NetworkReply::Failure("Mock does not support relay".to_string())
             }
-            NetworkCommand::GetLocalAddresses => {
-                NetworkReply::LocalAddresses {
-                    addrs: self.local_addrs.clone(),
-                }
-            }
+            NetworkCommand::GetLocalAddresses => NetworkReply::LocalAddresses {
+                addrs: self.local_addrs.clone(),
+            },
         }
     }
 }

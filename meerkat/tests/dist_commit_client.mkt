@@ -1,0 +1,11 @@
+import na
+
+service nb {
+    pub def bump = action { do na.inc_x; };
+    pub def val = na.get_x;
+}
+@test(nb) {
+    assert(val == 0);
+    do bump;
+    assert(val == 1);
+}

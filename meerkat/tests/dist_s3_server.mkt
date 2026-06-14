@@ -1,0 +1,5 @@
+service s3 {
+    var z = 100;
+    pub def bump3 = action { z = z + 7; };
+    pub def z_val = z;
+}

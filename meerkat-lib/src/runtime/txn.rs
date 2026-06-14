@@ -1,36 +1,70 @@
 //! Transaction ID and per-variable lock state for the Manager.
-//!
-//! Simplified implementation for issue #19. The existing transaction.rs
-//! and lock.rs provide the full actor-based infrastructure for future use.
 
-use std::collections::{HashMap, HashSet};
-use std::time::SystemTime;
+use crate::net::{Address, ServiceId};
 use crate::runtime::ast::Value;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A globally unique transaction identifier.
-/// Older timestamp = higher priority (for future wait-die implementation).
-/// Higher iteration = higher priority among retries of the same transaction.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// Per the Historiographer design a tid is a (unique node identifier,
+/// timestamp) pair. The timestamp is nanoseconds since the Unix epoch; the
+/// node_id makes ids from different nodes distinct and serves as the age
+/// tiebreaker. Serializable so it can travel in cross-node messages.
+///
+/// Age (for future wait-die): older = smaller timestamp, with node_id as
+/// tiebreaker. Higher iteration = higher priority among retries of the same
+/// transaction.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TxnId {
-    /// Wall-clock creation time, used for priority ordering.
-    pub timestamp: SystemTime,
+    /// Creation time as nanoseconds since the Unix epoch, used as a logical
+    /// clock: monotonically increasing per node so two transactions minted in
+    /// the same wall-clock tick still get distinct ids.
+    pub timestamp: u128,
+    /// (Probabilistically) unique identifier of the originating node.
+    pub node_id: u64,
     /// Incremented on retry so retried transactions gain priority.
     pub iteration: u32,
 }
 
+/// Last nanosecond timestamp handed out as a TxnId on this process. Acts as a
+/// logical clock: if the wall clock has not advanced past it, we bump by one so
+/// two transactions in the same tick still get distinct (and ordered) ids. This
+/// guarantees uniqueness on a node, which matters because TxnId aliases lock
+/// owners and keys participant-held transaction state.
+static LAST_TXN_NANOS: Mutex<u128> = Mutex::new(0);
+
 impl TxnId {
-    pub fn new() -> Self {
+    /// Create a new, node-unique transaction id originating from the given node.
+    pub fn new(node_id: u64) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        // Claim a timestamp strictly greater than any previously issued one,
+        // even if the clock repeated or went backwards. A clock error (now == 0)
+        // can no longer cause a collision because we still take last + 1.
+        let timestamp = {
+            let mut last = LAST_TXN_NANOS.lock().unwrap_or_else(|e| e.into_inner());
+            let ts = now.max(*last + 1);
+            *last = ts;
+            ts
+        };
         TxnId {
-            timestamp: SystemTime::now(),
+            timestamp,
+            node_id,
             iteration: 0,
         }
     }
 
-    /// Return a new TxnId with the same timestamp but higher iteration,
+    /// Return a new TxnId with the same timestamp/node but higher iteration,
     /// for use when retrying an aborted transaction.
     pub fn retry(&self) -> Self {
         TxnId {
             timestamp: self.timestamp,
+            node_id: self.node_id,
             iteration: self.iteration + 1,
         }
     }
@@ -44,10 +78,12 @@ impl PartialOrd for TxnId {
 
 impl Ord for TxnId {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Older timestamp = smaller = higher priority
-        // Higher iteration = higher priority among retries
+        // Age ordering: older timestamp = smaller = higher priority, with
+        // node_id as the tiebreaker. Higher iteration = higher priority among
+        // retries of the same transaction.
         self.timestamp
             .cmp(&other.timestamp)
+            .then(self.node_id.cmp(&other.node_id))
             .then(other.iteration.cmp(&self.iteration))
     }
 }
@@ -165,15 +201,18 @@ impl VarState {
 pub struct Transaction {
     /// Globally unique transaction identifier.
     pub id: TxnId,
-    /// Variables this transaction currently holds a lock on.
-    pub locked: HashSet<String>,
-    /// Values already read in this transaction (avoids re-fetching, including
-    /// redundant network round-trips for remote reads).
-    pub read_cache: HashMap<String, Value>,
-    /// Values written by this transaction, buffered and applied to the
-    /// service only on successful commit (so a failed transaction leaves no
-    /// partial writes).
-    pub written: HashMap<String, Value>,
+    /// (service, variable) pairs this transaction currently holds a lock on.
+    pub locked: HashSet<(ServiceId, String)>,
+    /// Values already read in this transaction, keyed by (service, variable)
+    /// (avoids re-fetching, including redundant network round-trips).
+    pub read_cache: HashMap<(ServiceId, String), Value>,
+    /// Values written by this transaction, keyed by (service, variable),
+    /// buffered and applied only on successful commit (so a failed transaction
+    /// leaves no partial writes).
+    pub written: HashMap<(ServiceId, String), Value>,
+    /// Remote nodes that joined this transaction (executed a composed action
+    /// under this id and are holding locks/buffered writes until commit/abort).
+    pub participants: HashSet<Address>,
 }
 
 impl Transaction {
@@ -183,6 +222,197 @@ impl Transaction {
             locked: HashSet::new(),
             read_cache: HashMap::new(),
             written: HashMap::new(),
+            participants: HashSet::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn txn(n: u128) -> TxnId {
+        TxnId {
+            timestamp: n,
+            node_id: 1,
+            iteration: 0,
+        }
+    }
+
+    fn assert_unlocked(lock: &VarLock) {
+        assert!(matches!(lock, VarLock::Unlocked));
+    }
+
+    fn assert_readers(lock: &VarLock, expected: &[TxnId]) {
+        match lock {
+            VarLock::ReadLocked(readers) => {
+                assert_eq!(readers.len(), expected.len());
+                for txn_id in expected {
+                    assert!(readers.contains(txn_id));
+                }
+            }
+            other => panic!("expected read lock, got {:?}", other),
+        }
+    }
+
+    fn assert_writer(lock: &VarLock, expected: &TxnId) {
+        assert!(matches!(lock, VarLock::WriteLocked(owner) if owner == expected));
+    }
+
+    #[test]
+    fn test_unlocked_accepts_read_lock() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn_id));
+        assert_readers(&lock, &[txn_id]);
+    }
+
+    #[test]
+    fn test_unlocked_accepts_write_lock() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&txn_id));
+        assert_writer(&lock, &txn_id);
+    }
+
+    #[test]
+    fn test_multiple_read_locks_can_coexist() {
+        let txn1 = txn(1);
+        let txn2 = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn1));
+        assert!(lock.try_read(&txn2));
+        assert_readers(&lock, &[txn1, txn2]);
+    }
+
+    #[test]
+    fn test_write_lock_blocks_read_lock_from_another_transaction() {
+        let writer = txn(1);
+        let reader = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&writer));
+        assert!(!lock.try_read(&reader));
+        assert_writer(&lock, &writer);
+    }
+
+    #[test]
+    fn test_read_lock_blocks_write_lock_from_another_transaction() {
+        let reader = txn(1);
+        let writer = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&reader));
+        assert!(!lock.try_write(&writer));
+        assert_readers(&lock, &[reader]);
+    }
+
+    #[test]
+    fn test_releasing_one_of_multiple_read_locks_keeps_remaining_read_lock() {
+        let txn1 = txn(1);
+        let txn2 = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn1));
+        assert!(lock.try_read(&txn2));
+        lock.release(&txn1);
+
+        assert_readers(&lock, &[txn2]);
+    }
+
+    #[test]
+    fn test_releasing_last_read_lock_unlocks() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn_id));
+        lock.release(&txn_id);
+
+        assert_unlocked(&lock);
+    }
+
+    #[test]
+    fn test_releasing_write_lock_unlocks() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&txn_id));
+        lock.release(&txn_id);
+
+        assert_unlocked(&lock);
+    }
+
+    #[test]
+    fn test_releasing_read_lock_with_wrong_transaction_id_does_not_unlock() {
+        let owner = txn(1);
+        let wrong_txn = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&owner));
+        lock.release(&wrong_txn);
+
+        assert_readers(&lock, &[owner]);
+    }
+
+    #[test]
+    fn test_releasing_write_lock_with_wrong_transaction_id_does_not_unlock() {
+        let owner = txn(1);
+        let wrong_txn = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&owner));
+        lock.release(&wrong_txn);
+
+        assert_writer(&lock, &owner);
+    }
+
+    #[test]
+    fn test_sole_reader_can_upgrade_to_write_lock() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn_id));
+        assert!(lock.upgrade_to_write(&txn_id));
+
+        assert_writer(&lock, &txn_id);
+    }
+
+    #[test]
+    fn test_reader_cannot_upgrade_when_other_readers_exist() {
+        let txn1 = txn(1);
+        let txn2 = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_read(&txn1));
+        assert!(lock.try_read(&txn2));
+        assert!(!lock.upgrade_to_write(&txn1));
+
+        assert_readers(&lock, &[txn1, txn2]);
+    }
+
+    #[test]
+    fn test_write_lock_upgrade_is_idempotent_for_owner() {
+        let txn_id = txn(1);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&txn_id));
+        assert!(lock.upgrade_to_write(&txn_id));
+
+        assert_writer(&lock, &txn_id);
+    }
+
+    #[test]
+    fn test_wrong_transaction_cannot_upgrade_write_lock() {
+        let owner = txn(1);
+        let wrong_txn = txn(2);
+        let mut lock = VarLock::new();
+
+        assert!(lock.try_write(&owner));
+        assert!(!lock.upgrade_to_write(&wrong_txn));
+
+        assert_writer(&lock, &owner);
     }
 }

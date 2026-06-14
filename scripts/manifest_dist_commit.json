@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "startup_timeout": 10.0,
+    "monitor_poll_interval": 0.25,
+    "terminate_timeout": 5.0
+  },
+  "nodes": [
+    {
+      "alias": "a",
+      "type": "server",
+      "file": "meerkat/tests/dist_commit_server.mkt",
+      "port": 9101
+    },
+    {
+      "alias": "b",
+      "type": "client",
+      "file": "meerkat/tests/dist_commit_client.mkt",
+      "imports": [
+        "a.na"
+      ]
+    }
+  ]
+}

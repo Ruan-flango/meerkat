@@ -5,9 +5,11 @@ use tokio::time::{sleep, Duration};
 async fn test_send_and_receive() {
     let mut server = NetworkActor::new(NodeType::Server).await.unwrap();
 
-    let reply = server.handle_command(NetworkCommand::Listen {
-        addr: Address::new("/ip4/127.0.0.1/tcp/0"),
-    }).await;
+    let reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/0"),
+        })
+        .await;
 
     let server_addr = match reply {
         NetworkReply::ListenSuccess { addr } => addr,
@@ -20,12 +22,14 @@ async fn test_send_and_receive() {
 
     let mut client = NetworkActor::new(NodeType::Server).await.unwrap();
 
-    let send_reply = client.handle_command(NetworkCommand::SendMessage {
-        addr: full_addr,
-        msg: MeerkatMessage::Ping {
-            content: "hello from client".to_string(),
-        },
-    }).await;
+    let send_reply = client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: full_addr,
+            msg: MeerkatMessage::Ping {
+                content: "hello from client".to_string(),
+            },
+        })
+        .await;
 
     println!("Send reply: {:?}", send_reply);
 
@@ -52,7 +56,8 @@ async fn test_send_and_receive() {
 async fn test_translate_address_server() {
     let server = NetworkActor::new(NodeType::Server).await.unwrap();
     // Server should use canonical address directly - no translation
-    let canonical = Address::new("/ip4/203.0.113.10/tcp/9000/p2p/12D3KooWXXX/p2p-circuit/p2p/12D3KooWYYY");
+    let canonical =
+        Address::new("/ip4/203.0.113.10/tcp/9000/p2p/12D3KooWXXX/p2p-circuit/p2p/12D3KooWYYY");
     let translated = server.translate_address_pub(&canonical);
     assert_eq!(translated.0, canonical.0);
     println!("✓ Server address translation test passed!");
@@ -63,9 +68,13 @@ async fn test_translate_address_browser_client() {
     let relay = Address::new("/ip4/server1-ip/tcp/9001/ws/p2p/12D3KooWSERVER1");
     let client = NetworkActor::new(NodeType::BrowserClient {
         relay_server: relay.clone(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
-    let canonical = Address::new("/ip4/203.0.113.10/tcp/9000/p2p/12D3KooWSERVER2/p2p-circuit/p2p/12D3KooWCLIENT2");
+    let canonical = Address::new(
+        "/ip4/203.0.113.10/tcp/9000/p2p/12D3KooWSERVER2/p2p-circuit/p2p/12D3KooWCLIENT2",
+    );
     let translated = client.translate_address_pub(&canonical);
 
     let expected = format!("{}/p2p-circuit/{}", relay.0, canonical.0);
@@ -77,9 +86,11 @@ async fn test_translate_address_browser_client() {
 async fn test_multiple_messages() {
     let mut server = NetworkActor::new(NodeType::Server).await.unwrap();
 
-    let reply = server.handle_command(NetworkCommand::Listen {
-        addr: Address::new("/ip4/127.0.0.1/tcp/0"),
-    }).await;
+    let reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/0"),
+        })
+        .await;
 
     let server_addr = match reply {
         NetworkReply::ListenSuccess { addr } => addr,
@@ -92,26 +103,34 @@ async fn test_multiple_messages() {
     let mut client = NetworkActor::new(NodeType::Server).await.unwrap();
 
     for i in 0..5 {
-        client.handle_command(NetworkCommand::SendMessage {
-            addr: full_addr.clone(),
-            msg: MeerkatMessage::Ping {
-                content: format!("Message {}", i),
-            },
-        }).await;
+        client
+            .handle_command(NetworkCommand::SendMessage {
+                addr: full_addr.clone(),
+                msg: MeerkatMessage::Ping {
+                    content: format!("Message {}", i),
+                },
+            })
+            .await;
     }
 
     let mut received = 0;
-    for _ in 0..100 {
-        sleep(Duration::from_millis(100)).await;
-        while let Ok(event) = server.event_rx.try_recv() {
+    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        while let Some(event) = server.event_rx.recv().await {
             if let NetworkEvent::MessageReceived { .. } = event {
                 received += 1;
+                if received >= 5 {
+                    break;
+                }
             }
         }
-        if received >= 5 { break; }
-    }
+    })
+    .await;
 
-    assert_eq!(received, 5, "Server should have received all 5 messages, got {}", received);
+    assert_eq!(
+        received, 5,
+        "Server should have received all 5 messages, got {}",
+        received
+    );
     println!("✓ Multiple messages test passed!");
 }
 
@@ -125,9 +144,11 @@ async fn test_mock_send_and_receive() {
     let mut client = MockNetwork::new_with_registry(registry.clone());
 
     // Listen to get a routable address
-    let reply = server.handle_command(NetworkCommand::Listen {
-        addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
-    }).await;
+    let reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
+        })
+        .await;
 
     let server_addr = match reply {
         NetworkReply::ListenSuccess { addr } => addr,
@@ -137,15 +158,20 @@ async fn test_mock_send_and_receive() {
     println!("Mock server address: {}", server_addr.0);
 
     // Send from client to server
-    client.handle_command(NetworkCommand::SendMessage {
-        addr: server_addr,
-        msg: MeerkatMessage::Ping {
-            content: "hello from mock client".to_string(),
-        },
-    }).await;
+    client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: server_addr,
+            msg: MeerkatMessage::Ping {
+                content: "hello from mock client".to_string(),
+            },
+        })
+        .await;
 
     // Message should be delivered instantly — no sleep needed
-    let event = server.event_rx.try_recv().expect("Server should have received a message");
+    let event = server
+        .event_rx
+        .try_recv()
+        .expect("Server should have received a message");
 
     if let NetworkEvent::MessageReceived { msg, .. } = event {
         if let MeerkatMessage::Ping { content } = msg {
@@ -163,9 +189,11 @@ async fn test_mock_multiple_messages() {
     let mut server = MockNetwork::new_with_registry(registry.clone());
     let mut client = MockNetwork::new_with_registry(registry.clone());
 
-    let reply = server.handle_command(NetworkCommand::Listen {
-        addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
-    }).await;
+    let reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
+        })
+        .await;
 
     let server_addr = match reply {
         NetworkReply::ListenSuccess { addr } => addr,
@@ -173,12 +201,14 @@ async fn test_mock_multiple_messages() {
     };
 
     for i in 0..5 {
-        client.handle_command(NetworkCommand::SendMessage {
-            addr: server_addr.clone(),
-            msg: MeerkatMessage::Ping {
-                content: format!("Message {}", i),
-            },
-        }).await;
+        client
+            .handle_command(NetworkCommand::SendMessage {
+                addr: server_addr.clone(),
+                msg: MeerkatMessage::Ping {
+                    content: format!("Message {}", i),
+                },
+            })
+            .await;
     }
 
     let mut received = 0;
@@ -196,33 +226,38 @@ async fn test_mock_multiple_messages() {
 async fn test_mock_unreachable_address() {
     let mut client = MockNetwork::new();
 
-    client.handle_command(NetworkCommand::SendMessage {
-        addr: Address::new("/ip4/127.0.0.1/tcp/9000/p2p/nonexistent-peer"),
-        msg: MeerkatMessage::Ping {
-            content: "this should fail".to_string(),
-        },
-    }).await;
+    client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9000/p2p/nonexistent-peer"),
+            msg: MeerkatMessage::Ping {
+                content: "this should fail".to_string(),
+            },
+        })
+        .await;
 
-    let event = client.event_rx.try_recv().expect("Should have received SendFailed");
+    let event = client
+        .event_rx
+        .try_recv()
+        .expect("Should have received SendFailed");
     assert!(
         matches!(event, NetworkEvent::SendFailed { .. }),
-        "Expected SendFailed, got {:?}", event
+        "Expected SendFailed, got {:?}",
+        event
     );
     println!("✓ Mock unreachable address test passed!");
 }
 
 // ── NetworkLayer trait tests ──────────────────────────────────────────────────
 
-async fn send_ping_via_trait<N: meerkat_lib::net::NetworkLayer>(
-    sender: &mut N,
-    addr: Address,
-) {
-    sender.handle_command(NetworkCommand::SendMessage {
-        addr,
-        msg: MeerkatMessage::Ping {
-            content: "via trait".to_string(),
-        },
-    }).await;
+async fn send_ping_via_trait<N: meerkat_lib::net::NetworkLayer>(sender: &mut N, addr: Address) {
+    sender
+        .handle_command(NetworkCommand::SendMessage {
+            addr,
+            msg: MeerkatMessage::Ping {
+                content: "via trait".to_string(),
+            },
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -231,9 +266,11 @@ async fn test_trait_with_mock() {
     let mut server = MockNetwork::new_with_registry(registry.clone());
     let mut client = MockNetwork::new_with_registry(registry.clone());
 
-    let reply = server.handle_command(NetworkCommand::Listen {
-        addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
-    }).await;
+    let reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
+        })
+        .await;
 
     let server_addr = match reply {
         NetworkReply::ListenSuccess { addr } => addr,
@@ -251,9 +288,11 @@ async fn test_trait_with_mock() {
 async fn test_trait_with_real_network() {
     let mut server = NetworkActor::new(NodeType::Server).await.unwrap();
 
-    let reply = server.handle_command(NetworkCommand::Listen {
-        addr: Address::new("/ip4/127.0.0.1/tcp/0"),
-    }).await;
+    let reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/0"),
+        })
+        .await;
 
     let server_addr = match reply {
         NetworkReply::ListenSuccess { addr } => addr,
@@ -285,88 +324,183 @@ async fn test_circuit_relay() {
     use std::time::Duration;
     use tokio::time::sleep;
 
-    // ── Step 1: Start relay server ────────────────────────────────────────────
+    // Start relay server
     let mut relay_server = NetworkActor::new(NodeType::Server).await.unwrap();
 
-    let relay_listen_reply = relay_server.handle_command(NetworkCommand::Listen {
-        addr: Address::new("/ip4/127.0.0.1/tcp/0"),
-    }).await;
+    let relay_listen_reply = relay_server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/0"),
+        })
+        .await;
 
     let relay_addr = match relay_listen_reply {
         NetworkReply::ListenSuccess { addr } => addr,
-        other => panic!("Relay listen failed: {:?}", other),
+        other => panic!("relay listen failed: {:?}", other),
     };
 
-    let relay_full_addr = Address::new(format!("{}/p2p/{}", relay_addr.0, relay_server.local_peer_id()));
-    println!("Relay server address: {}", relay_full_addr.0);
+    let relay_full_addr = Address::new(format!(
+        "{}/p2p/{}",
+        relay_addr.0,
+        relay_server.local_peer_id()
+    ));
+    println!("relay server: {}", relay_full_addr.0);
 
-    // ── Step 2: Start client2, get circuit relay address ─────────────────────
+    // Start `client2` and register circuit relay reservation
     let mut client2 = NetworkActor::new(NodeType::BrowserClient {
         relay_server: relay_full_addr.clone(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
-    let _client2_peer_id = client2.local_peer_id();
-
-    let circuit_reply = client2.handle_command(NetworkCommand::ListenViaRelay {
-        relay_addr: relay_full_addr.clone(),
-    }).await;
+    let circuit_reply = client2
+        .handle_command(NetworkCommand::ListenViaRelay {
+            relay_addr: relay_full_addr.clone(),
+        })
+        .await;
 
     let client2_circuit_addr = match circuit_reply {
         NetworkReply::ListenSuccess { addr } => addr,
-        other => panic!("Circuit relay listen failed: {:?}", other),
+        other => panic!("`ListenViaRelay` failed: {:?}", other),
     };
 
-    println!("client2 circuit relay address: {}", client2_circuit_addr.0);
+    println!("client2 circuit addr: {}", client2_circuit_addr.0);
     assert!(
         client2_circuit_addr.0.contains("p2p-circuit"),
-        "Expected circuit relay address, got: {}", client2_circuit_addr.0
+        "expected circuit relay address, got: {}",
+        client2_circuit_addr.0
     );
 
-    // Wait for relay server to confirm reservation before client1 dials through it
-    sleep(Duration::from_secs(2)).await;
-    while let Ok(e) = relay_server.event_rx.try_recv() {
-        println!("relay server event (pre-send): {:?}", e);
-    }
-    println!("Starting client1 send...");
-
-    // ── Step 3: Start client1, also a relay client (needs relay transport to dial circuit addrs)
-    let mut client1 = NetworkActor::new(NodeType::BrowserClient {
-        relay_server: relay_full_addr.clone(),
-    }).await.unwrap();
-
-    // Wait for client1 to finish identify with relay before sending via circuit
-    sleep(Duration::from_secs(3)).await;
-
-    client1.handle_command(NetworkCommand::SendMessage {
-        addr: client2_circuit_addr.clone(),
-        msg: MeerkatMessage::Ping { content: "hello via relay".to_string() },
-    }).await;
-
-    // ── Step 4: Poll until client2 receives the message ──────────────────────
-    let mut received = false;
-    for _ in 0..300 {
-        sleep(Duration::from_millis(200)).await;
-
-        while let Ok(e) = client2.event_rx.try_recv() {
-            println!("client2 got: {:?}", e);
-            if let NetworkEvent::MessageReceived { msg: MeerkatMessage::Ping { content }, .. } = e {
-                if content == "hello via relay" {
-                    received = true;
+    // Wait for relay server to confirm `client2` connection before `client1` dials
+    let mut client2_connected = false;
+    for _ in 0..50 {
+        while let Ok(e) = relay_server.event_rx.try_recv() {
+            println!("relay server: {:?}", e);
+            if let NetworkEvent::PeerConnected { peer } = &e {
+                if *peer == client2.local_peer_id() {
+                    client2_connected = true;
                 }
             }
         }
-
-        while let Ok(e) = relay_server.event_rx.try_recv() {
-            println!("relay server event: {:?}", e);
+        if client2_connected {
+            break;
         }
-
-        while let Ok(e) = client1.event_rx.try_recv() {
-            println!("client1 event: {:?}", e);
-        }
-
-        if received { break; }
+        sleep(Duration::from_millis(100)).await;
     }
+    assert!(
+        client2_connected,
+        "`client2` never connected to the relay server"
+    );
 
-    assert!(received, "client2 never received the message via circuit relay");
-    println!("✓ Circuit relay test passed!");
+    // Start `client1` and send to `client2` through the relay.
+    // `client1` does not auto-dial the relay on creation; the relay transport
+    // connects as part of dialling the circuit address in `SendMessage`
+    let mut client1 = NetworkActor::new(NodeType::BrowserClient {
+        relay_server: relay_full_addr.clone(),
+    })
+    .await
+    .unwrap();
+
+    // Retry send with a hard 10-second timeout (5 attempts x 10 polls x 100ms)
+    let received = tokio::time::timeout(Duration::from_secs(10), async {
+        for attempt in 0..5usize {
+            client1
+                .handle_command(NetworkCommand::SendMessage {
+                    addr: client2_circuit_addr.clone(),
+                    msg: MeerkatMessage::Ping {
+                        content: "hello via relay".to_string(),
+                    },
+                })
+                .await;
+
+            for _ in 0..10usize {
+                sleep(Duration::from_millis(100)).await;
+
+                while let Ok(e) = client2.event_rx.try_recv() {
+                    println!("client2: {:?}", e);
+                    if let NetworkEvent::MessageReceived {
+                        msg: MeerkatMessage::Ping { content },
+                        ..
+                    } = e
+                    {
+                        if content == "hello via relay" {
+                            return true;
+                        }
+                    }
+                }
+
+                // Drain other queues to keep event loops responsive
+                while let Ok(e) = relay_server.event_rx.try_recv() {
+                    println!("relay server: {:?}", e);
+                }
+                while let Ok(e) = client1.event_rx.try_recv() {
+                    println!("client1: {:?}", e);
+                }
+            }
+            println!("attempt {} failed, retrying", attempt + 1);
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        received,
+        "client2 never received the message via circuit relay"
+    );
+
+    // Send to a peer not registered with the relay; the relay rejects the circuit,
+    // producing `OutgoingConnectionError`. Verify `SendFailed` is emitted
+    let fake_peer = Address::new(format!(
+        "{}/p2p-circuit/p2p/12D3KooW8Zr3nQ7mL4xK9vJ2pY6sF1gT5hR",
+        relay_full_addr.0,
+    ));
+    client1
+        .handle_command(NetworkCommand::SendMessage {
+            addr: fake_peer,
+            msg: MeerkatMessage::Ping {
+                content: "should fail".to_string(),
+            },
+        })
+        .await;
+
+    let send_failed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            while let Ok(e) = client1.event_rx.try_recv() {
+                if matches!(e, NetworkEvent::SendFailed { .. }) {
+                    return true;
+                }
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(
+        send_failed,
+        "`SendFailed` not received after `OutgoingConnectionError`"
+    );
+
+    // Verify `ListenViaRelay` on an unreachable relay returns `Failure` promptly
+    let dead_relay = Address::new("/ip4/127.0.0.1/tcp/19998/p2p/12D3KooW4nR7qL2mK8vJ3pY9sF6gT1hX");
+    let mut orphan = NetworkActor::new(NodeType::BrowserClient {
+        relay_server: dead_relay.clone(),
+    })
+    .await
+    .unwrap();
+
+    let relay_reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        orphan.handle_command(NetworkCommand::ListenViaRelay {
+            relay_addr: dead_relay,
+        }),
+    )
+    .await
+    .expect("`ListenViaRelay` on unreachable relay must not hang");
+
+    assert!(
+        matches!(relay_reply, NetworkReply::Failure(_)),
+        "`ListenViaRelay` on unreachable relay returned {:?}, expected `Failure`",
+        relay_reply
+    );
+    println!("circuit relay test passed");
 }

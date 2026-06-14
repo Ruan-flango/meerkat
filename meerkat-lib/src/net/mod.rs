@@ -1,13 +1,13 @@
-pub mod types;
-pub mod messages;
 pub mod actor;
-pub mod protocol;
+pub mod messages;
 pub mod mock;
 pub mod network_layer;
+pub mod protocol;
+pub mod types;
 
-pub use types::*;
-pub use messages::*;
 pub use actor::NetworkActor;
+pub use messages::*;
 pub use mock::MockNetwork;
 pub use network_layer::NetworkLayer;
-pub use protocol::{MEERKAT_PROTOCOL, send_message, recv_message};
+pub use protocol::{recv_message, send_message, MEERKAT_PROTOCOL};
+pub use types::*;

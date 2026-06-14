@@ -1,0 +1,9 @@
+import s2
+
+service chk {
+    pub def wv = s2.w_val;
+}
+
+@test(chk) {
+    assert(wv == 15);
+}

@@ -1,0 +1,12 @@
+import s2
+import s3
+
+service chk {
+    pub def wv = s2.w_val;
+    pub def zv = s3.z_val;
+}
+
+@test(chk) {
+    assert(wv == 15);
+    assert(zv == 107);
+}

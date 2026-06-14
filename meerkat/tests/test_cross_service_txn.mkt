@@ -1,0 +1,18 @@
+service s2 {
+    var w = 10;
+    pub def bump = action { w = w + 5; };
+}
+
+service s1 {
+    var x = 0;
+    pub def update_both = action {
+        x = x + 1;
+        do s2.bump;
+    };
+}
+
+@test(s1) {
+    do update_both;
+    assert(x == 1);
+    assert(s2.w == 15);
+}

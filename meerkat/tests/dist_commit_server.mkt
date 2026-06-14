@@ -1,0 +1,5 @@
+service na {
+    var x = 0;
+    pub def inc_x = action { x = x + 1; };
+    pub def get_x = x;
+}

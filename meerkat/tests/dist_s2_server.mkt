@@ -1,0 +1,5 @@
+service s2 {
+    var w = 10;
+    pub def bump = action { w = w + 5; };
+    pub def w_val = w;
+}

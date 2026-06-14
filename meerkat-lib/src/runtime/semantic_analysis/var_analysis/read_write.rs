@@ -1,5 +1,5 @@
+use crate::ast::{ActionStmt, Expr};
 use std::collections::HashSet;
-use crate::ast::{Expr, ActionStmt};
 
 impl Expr {
     /// return free variables in expr wrt var_binded, used for
@@ -19,9 +19,7 @@ impl Expr {
                     HashSet::from([ident.clone()])
                 }
             }
-            Expr::KeyVal { value, .. } => {
-                value.free_var(reactive_names, var_binded)
-            }
+            Expr::KeyVal { value, .. } => value.free_var(reactive_names, var_binded),
             Expr::Tuple { val } => {
                 let mut free_vars = HashSet::new();
                 for item in val {
@@ -30,7 +28,11 @@ impl Expr {
                 free_vars
             }
             Expr::Unop { op: _, expr } => expr.free_var(reactive_names, var_binded),
-            Expr::Binop { op: _, expr1, expr2 } => {
+            Expr::Binop {
+                op: _,
+                expr1,
+                expr2,
+            } => {
                 let mut free_vars = expr1.free_var(reactive_names, var_binded);
                 free_vars.extend(expr2.free_var(reactive_names, var_binded));
                 free_vars
@@ -83,12 +85,20 @@ impl Expr {
                 // member access on another service - no local free vars
                 HashSet::new()
             }
-            Expr::Select { table_name, where_clause, .. } => {
+            Expr::Select {
+                table_name,
+                where_clause,
+                ..
+            } => {
                 let mut free_vars = where_clause.free_var(reactive_names, var_binded);
                 free_vars.insert(table_name.clone());
                 free_vars
             }
-            Expr::Fold { operation, identity, .. } => {
+            Expr::Fold {
+                operation,
+                identity,
+                ..
+            } => {
                 let mut free_vars = HashSet::new();
                 free_vars.extend(operation.free_var(reactive_names, var_binded));
                 free_vars.extend(identity.free_var(reactive_names, var_binded));

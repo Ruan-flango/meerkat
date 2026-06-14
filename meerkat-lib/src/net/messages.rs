@@ -1,21 +1,14 @@
 use super::types::*;
-use kameo::Reply;
 use kameo::message::Message;
+use kameo::Reply;
 
 /// Messages TO Network Actor (from Manager)
 #[derive(Debug)]
 pub enum NetworkCommand {
-    SendMessage {
-        addr: Address,
-        msg: MeerkatMessage,
-    },
-    Listen {
-        addr: Address,
-    },
+    SendMessage { addr: Address, msg: MeerkatMessage },
+    Listen { addr: Address },
     GetLocalAddresses,
-    ListenViaRelay {
-        relay_addr: Address,
-    },
+    ListenViaRelay { relay_addr: Address },
 }
 
 /// Reply from Network Actor - single unified enum
@@ -24,7 +17,7 @@ pub enum NetworkReply {
     MessageSent { msg_id: MessageId },
     ListenSuccess { addr: Address },
     LocalAddresses { addrs: Vec<Address> },
-    Failure(String),  // renamed from Error to avoid conflict with Reply trait
+    Failure(String), // renamed from Error to avoid conflict with Reply trait
 }
 
 impl Message<NetworkCommand> for super::NetworkActor {
@@ -42,14 +35,8 @@ impl Message<NetworkCommand> for super::NetworkActor {
 /// Messages FROM Network Actor TO Manager Actor
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
-    MessageReceived {
-        peer: String,
-        msg: MeerkatMessage,
-    },
-    SendFailed {
-        msg_id: MessageId,
-        error: SendError,
-    },
+    MessageReceived { peer: String, msg: MeerkatMessage },
+    SendFailed { msg_id: MessageId, error: SendError },
     PeerConnected { peer: String },
     PeerDisconnected { peer: String },
 }
