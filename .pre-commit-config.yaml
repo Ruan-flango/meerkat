@@ -44,13 +44,12 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      # TODO: Re-enable after existing Clippy warnings are fixed.
-      # - id: cargo-clippy
-      #   name: cargo clippy
-      #   entry: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      #   language: system
-      #   types: [rust]
-      #   pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
 
       - id: cargo-check-wasm
         name: cargo check wasm
