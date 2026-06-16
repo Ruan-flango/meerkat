@@ -20,7 +20,7 @@ fn from_num<'b>(lex: &mut Lexer<'b, Token<'b>>) -> Result<i32, String> {
         Ok(val) => val,
         Err(e) => return Err(format!("Parsing failed with Error {:?}", e)),
     };
-    if out > ((i32::MIN as i64).abs()) {
+    if out > i32::MAX as i64 {
         // All numbers are positive because - is lexed separately
         return Err(format!("Number {} is out of bounds", out));
     }
