@@ -38,6 +38,10 @@ struct Args {
     /// Perform static checks and terminate immediately
     #[arg(long = "check", default_value_t = false)]
     check_only: bool,
+
+    /// Emit AST to `stdout`
+    #[arg(long = "ast", default_value_t = false)]
+    ast: bool,
 }
 
 #[tokio::main]
@@ -67,8 +71,24 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             let prog = meerkat_lib::runtime::parser::parse_file(file)
                 .map_err(|e| format!("Parse error: {}", e))?;
 
+            // This must appear prior to `check_only` or it will never print. These
+            // modes are designed to work both in isolation and in tandem
+            if args.ast {
+                let printer = meerkat_lib::runtime::ast::AstPrinter::new();
+                printer.print_program(&prog);
+            }
+
+            // TODO: Insert static checks here. The static checks must occur at this
+            // program point in order to properly sequence the semantics of these
+            // CLI flags. All standard checks go here; additional static checks
+            // must occur after this AND in the `check_only` branch below; both must
+            // be simultaneously maintained
+
+            // This mode must appear before `server` args check in order to properly
+            // stop execution. Logic for static checks must not occur in this branch,
+            // as the intent of this mode is to simply halt after the static semantics
+            // phase of the interpter/compiler. See also: above comment(s)
             if args.check_only {
-                // TODO: Insert static checks here
                 return Ok(());
             }
 
@@ -79,8 +99,10 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         None => {
-            if args.server || args.check_only {
-                return Err("Expected a .mkt file (-f).".into());
+            if args.server || args.check_only || args.ast {
+                return Err(
+                    "Expected a .mkt file (-f) for --server, --check, or --ast mode.".into(),
+                );
             }
             let mut manager = Manager::new();
             manager.local = args.local;
