@@ -209,4 +209,52 @@ mod tests {
         assert_eq!(interner.get(s3), "c");
         assert_ne!(s1, s2);
     }
+
+    /// Verify that a Symbol's Debug formatting produces the expected string representation
+    #[test]
+    fn test_symbol_debug_format() {
+        let symbol = Symbol { id: 42 };
+        assert_eq!(format!("{:?}", symbol), "Symbol(42)");
+    }
+
+    /// Verify that Symbol's Default implementation creates the empty sentinel symbol
+    #[test]
+    fn test_symbol_default() {
+        assert_eq!(Symbol::default(), Symbol::empty());
+    }
+
+    /// Verify that Interner's Default implementation initializes correctly
+    #[test]
+    fn test_interner_default() {
+        let interner = Interner::default();
+        assert_eq!(interner.get(Symbol::empty()), "");
+    }
+
+    /// Verify that Symbol implements Display correctly
+    #[test]
+    fn test_symbol_display_format() {
+        let symbol = Symbol { id: 100 };
+        assert_eq!(format!("{}", symbol), "100");
+    }
+
+    /// Verify Symbol PartialEq, Eq, and Hash properties
+    #[test]
+    fn test_symbol_eq_and_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let sym1 = Symbol { id: 10 };
+        let sym2 = Symbol { id: 10 };
+        let sym3 = Symbol { id: 20 };
+
+        assert!(sym1 == sym2);
+        assert!(sym1 != sym3);
+
+        let mut h1 = DefaultHasher::new();
+        sym1.hash(&mut h1);
+        let mut h2 = DefaultHasher::new();
+        sym2.hash(&mut h2);
+
+        assert_eq!(h1.finish(), h2.finish());
+    }
 }

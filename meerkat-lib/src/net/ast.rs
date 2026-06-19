@@ -7,20 +7,17 @@ use crate::net::ServiceNetId;
 use serde::{Deserialize, Serialize};
 
 /// Network representation of a field definition
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetField {
     pub name: String,
     pub ty: NetDataType,
 }
 
 /// Network representation of an action statement
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetActionStmt {
     /// Bind a value to a local name using `let`
-    Let {
-        name: String,
-        expr: NetExpr,
-    },
+    Let { name: String, expr: NetExpr },
     /// A standalone expression statement
     Expr(NetExpr),
     /// A `do` statement to evaluate an expression for side effects
@@ -28,32 +25,20 @@ pub enum NetActionStmt {
     /// An `assert` statement to check invariants
     Assert(NetExpr),
     /// Re-assign a value to an existing variable
-    Assign {
-        name: String,
-        expr: NetExpr,
-    },
+    Assign { name: String, expr: NetExpr },
     /// Insert a record into a table
-    Insert {
-        row: NetExpr,
-        table_name: String,
-    },
+    Insert { row: NetExpr, table_name: String },
 }
 
 /// Network representation of a value
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetValue {
     /// A numeric integer value
-    Number {
-        val: i32,
-    },
+    Number { val: i32 },
     /// A boolean value
-    Bool {
-        val: bool,
-    },
+    Bool { val: bool },
     /// A `String` literal value
-    String {
-        val: String,
-    },
+    String { val: String },
     /// A standard closure value with environment
     Closure {
         params: Vec<String>,
@@ -70,30 +55,18 @@ pub enum NetValue {
 }
 
 /// Network representation of an expression
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetExpr {
     /// Literal constant value
-    Literal {
-        val: NetValue,
-    },
+    Literal { val: NetValue },
     /// Variable reference
-    Variable {
-        name: String,
-    },
+    Variable { name: String },
     /// Tuple construct containing elements
-    Tuple {
-        val: Vec<NetExpr>,
-    },
+    Tuple { val: Vec<NetExpr> },
     /// Key-value attribute binding
-    KeyVal {
-        name: String,
-        value: Box<NetExpr>,
-    },
+    KeyVal { name: String, value: Box<NetExpr> },
     /// Unary operator application
-    Unop {
-        op: NetUnOp,
-        expr: Box<NetExpr>,
-    },
+    Unop { op: NetUnOp, expr: Box<NetExpr> },
     /// Binary operator application
     Binop {
         op: NetBinOp,
@@ -147,7 +120,7 @@ pub enum NetExpr {
 ///
 /// This enum defines the serialized unary operators mapped from the
 /// runtime counterparts for transmission over the network
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NetUnOp {
     /// Negation operator
     Neg,
@@ -159,7 +132,7 @@ pub enum NetUnOp {
 ///
 /// This enum defines the serialized binary operators mapped from the
 /// runtime counterparts for transmission over the network
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NetBinOp {
     /// Addition operator
     Add,
@@ -185,7 +158,7 @@ pub enum NetBinOp {
 ///
 /// This enum defines the serialized data types mapped from the
 /// runtime counterparts for transmission over the network
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetDataType {
     /// String data type representation
     String,

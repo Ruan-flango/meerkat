@@ -539,4 +539,336 @@ mod tests {
 
         assert_eq!(orig_str, new_str);
     }
+
+    /// Verify round-trip encoding and decoding for
+    /// Value::String and Value::Closure
+    #[test]
+    fn test_value_codec_exhaustive() {
+        let mut interner_orig = Interner::new();
+        let param_name = interner_orig.insert("x");
+        let body = Expr::Literal {
+            val: Value::String {
+                val: "hello".to_string(),
+            },
+        };
+        let env_key = interner_orig.insert("y");
+        let env_val = Value::Number { val: 123 };
+        let service = interner_orig.insert("my_service");
+
+        let original_value = Value::Closure {
+            params: vec![param_name],
+            body: Box::new(body),
+            env: vec![(env_key, env_val)],
+            service_name: service,
+        };
+
+        let encoded = encode_value(&original_value, &interner_orig);
+        let mut interner_new = Interner::new();
+        let decoded = decode_value(encoded, &mut interner_new);
+
+        assert_eq!(format!("{}", original_value), format!("{}", decoded));
+    }
+
+    /// Verify round-trip encoding and decoding for Tuple,
+    /// KeyVal, Unop, Binop, and If expressions
+    #[test]
+    fn test_expr_codec_exhaustive_1() {
+        let run_expr_test = |expr: &Expr, interner_orig: &Interner| {
+            let encoded = encode_expr(expr, interner_orig);
+            let mut interner_new = Interner::new();
+            let decoded = decode_expr(encoded, &mut interner_new);
+            assert_eq!(format!("{}", expr), format!("{}", decoded));
+        };
+
+        // 1. Tuple
+        let interner = Interner::new();
+        let tuple_expr = Expr::Tuple {
+            val: vec![
+                Expr::Literal {
+                    val: Value::Number { val: 1 },
+                },
+                Expr::Literal {
+                    val: Value::Number { val: 2 },
+                },
+            ],
+        };
+        run_expr_test(&tuple_expr, &interner);
+
+        // 2. KeyVal
+        let mut interner = Interner::new();
+        let name_kv = interner.insert("kv_name");
+        let key_val_expr = Expr::KeyVal {
+            name: name_kv,
+            value: Box::new(Expr::Literal {
+                val: Value::Number { val: 3 },
+            }),
+        };
+        run_expr_test(&key_val_expr, &interner);
+
+        // 3. Unop (Neg, Not)
+        for op in &[UnOp::Neg, UnOp::Not] {
+            let interner = Interner::new();
+            let unop_expr = Expr::Unop {
+                op: *op,
+                expr: Box::new(Expr::Literal {
+                    val: Value::Bool { val: true },
+                }),
+            };
+            run_expr_test(&unop_expr, &interner);
+        }
+
+        // 4. Binop
+        let binops = &[
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::Mul,
+            BinOp::Div,
+            BinOp::Eq,
+            BinOp::Lt,
+            BinOp::Gt,
+            BinOp::And,
+            BinOp::Or,
+        ];
+        for op in binops {
+            let interner = Interner::new();
+            let binop_expr = Expr::Binop {
+                op: *op,
+                expr1: Box::new(Expr::Literal {
+                    val: Value::Number { val: 5 },
+                }),
+                expr2: Box::new(Expr::Literal {
+                    val: Value::Number { val: 6 },
+                }),
+            };
+            run_expr_test(&binop_expr, &interner);
+        }
+
+        // 5. If
+        let interner = Interner::new();
+        let if_expr = Expr::If {
+            cond: Box::new(Expr::Literal {
+                val: Value::Bool { val: true },
+            }),
+            expr1: Box::new(Expr::Literal {
+                val: Value::Number { val: 7 },
+            }),
+            expr2: Box::new(Expr::Literal {
+                val: Value::Number { val: 8 },
+            }),
+        };
+        run_expr_test(&if_expr, &interner);
+    }
+
+    /// Verify round-trip encoding and decoding for Func,
+    /// Call, Action, and MemberAccess expressions
+    #[test]
+    fn test_expr_codec_exhaustive_2() {
+        let run_expr_test = |expr: &Expr, interner_orig: &Interner| {
+            let encoded = encode_expr(expr, interner_orig);
+            let mut interner_new = Interner::new();
+            let decoded = decode_expr(encoded, &mut interner_new);
+            assert_eq!(format!("{}", expr), format!("{}", decoded));
+        };
+
+        // 1. Func
+        let mut interner = Interner::new();
+        let param_name = interner.insert("p");
+        let func_expr = Expr::Func {
+            params: vec![param_name],
+            body: Box::new(Expr::Literal {
+                val: Value::Number { val: 9 },
+            }),
+        };
+        run_expr_test(&func_expr, &interner);
+
+        // 2. Call
+        let mut interner = Interner::new();
+        let param_name = interner.insert("p");
+        let func_expr = Expr::Func {
+            params: vec![param_name],
+            body: Box::new(Expr::Literal {
+                val: Value::Number { val: 9 },
+            }),
+        };
+        let call_expr = Expr::Call {
+            func: Box::new(func_expr),
+            args: vec![Expr::Literal {
+                val: Value::Number { val: 10 },
+            }],
+        };
+        run_expr_test(&call_expr, &interner);
+
+        // 3. MemberAccess
+        let mut interner = Interner::new();
+        let service_name = interner.insert("srv");
+        let member_name = interner.insert("mem");
+        let member_expr = Expr::MemberAccess {
+            service_name,
+            member_name,
+        };
+        run_expr_test(&member_expr, &interner);
+
+        // 4. Action
+        let interner = Interner::new();
+        let action_expr = Expr::Action(vec![ActionStmt::Do(Expr::Literal {
+            val: Value::Number { val: 11 },
+        })]);
+        run_expr_test(&action_expr, &interner);
+    }
+
+    /// Verify round-trip encoding and decoding for Select,
+    /// Table, and Fold expressions
+    #[test]
+    fn test_expr_codec_exhaustive_3() {
+        let run_expr_test = |expr: &Expr, interner_orig: &Interner| {
+            let encoded = encode_expr(expr, interner_orig);
+            let mut interner_new = Interner::new();
+            let decoded = decode_expr(encoded, &mut interner_new);
+            assert_eq!(format!("{}", expr), format!("{}", decoded));
+        };
+
+        // 1. Select
+        let mut interner = Interner::new();
+        let table_name = interner.insert("tbl");
+        let col1 = interner.insert("col1");
+        let col2 = interner.insert("col2");
+        let select_expr = Expr::Select {
+            table_name,
+            column_names: vec![col1, col2],
+            where_clause: Box::new(Expr::Literal {
+                val: Value::Bool { val: true },
+            }),
+        };
+        run_expr_test(&select_expr, &interner);
+
+        // 2. Table
+        let mut interner = Interner::new();
+        let col1 = interner.insert("col1");
+        let col2 = interner.insert("col2");
+        let f1 = Field {
+            name: col1,
+            ty: DataType::String,
+        };
+        let f2 = Field {
+            name: col2,
+            ty: DataType::Number,
+        };
+        let f3 = Field {
+            name: col2,
+            ty: DataType::Bool,
+        };
+        let table_expr = Expr::Table {
+            schema: vec![f1, f2, f3],
+            records: vec![Expr::Literal {
+                val: Value::String {
+                    val: "abc".to_string(),
+                },
+            }],
+        };
+        run_expr_test(&table_expr, &interner);
+
+        // 3. Fold
+        let mut interner = Interner::new();
+        let table_name = interner.insert("tbl");
+        let col1 = interner.insert("col1");
+        let fold_expr = Expr::Fold {
+            table_name,
+            column_name: col1,
+            operation: Box::new(Expr::Literal {
+                val: Value::Number { val: 42 },
+            }),
+            identity: Box::new(Expr::Literal {
+                val: Value::Number { val: 0 },
+            }),
+        };
+        run_expr_test(&fold_expr, &interner);
+    }
+
+    /// Verify round-trip encoding and decoding for Expr,
+    /// Do, Assert, and Assign ActionStmts
+    #[test]
+    fn test_action_stmt_codec_exhaustive() {
+        let run_stmt_test = |stmt: &ActionStmt, interner_orig: &Interner| {
+            let encoded = encode_action_stmt(stmt, interner_orig);
+            let mut interner_new = Interner::new();
+            let decoded = decode_action_stmt(encoded, &mut interner_new);
+            assert_eq!(format!("{}", stmt), format!("{}", decoded));
+        };
+
+        // 1. Expr
+        let interner = Interner::new();
+        let stmt_expr = ActionStmt::Expr(Expr::Literal {
+            val: Value::Number { val: 100 },
+        });
+        run_stmt_test(&stmt_expr, &interner);
+
+        // 2. Do
+        let interner = Interner::new();
+        let stmt_do = ActionStmt::Do(Expr::Literal {
+            val: Value::Number { val: 200 },
+        });
+        run_stmt_test(&stmt_do, &interner);
+
+        // 3. Assert
+        let interner = Interner::new();
+        let stmt_assert = ActionStmt::Assert(Expr::Literal {
+            val: Value::Bool { val: true },
+        });
+        run_stmt_test(&stmt_assert, &interner);
+
+        // 4. Assign
+        let mut interner = Interner::new();
+        let name_var = interner.insert("v");
+        let stmt_assign = ActionStmt::Assign {
+            name: name_var,
+            expr: Expr::Literal {
+                val: Value::Number { val: 300 },
+            },
+        };
+        run_stmt_test(&stmt_assign, &interner);
+    }
+
+    /// Verify that deserializing a structurally corrupted JSON
+    /// string is rejected safely
+    #[test]
+    fn test_codec_corrupt_payload_rejection() {
+        let malformed_json = "{ \"val\": { \"Closure\": { \"params\": [";
+        let res: Result<NetValue, _> = serde_json::from_str(malformed_json);
+        assert!(res.is_err() == true);
+    }
+
+    /// Verify that type mismatches in JSON are rejected safely
+    /// at the boundary
+    #[test]
+    fn test_codec_type_mismatch_rejection() {
+        let mismatched_json = "{ \"Bool\": { \"val\": \"not_a_bool\" } }";
+        let res: Result<NetValue, _> = serde_json::from_str(mismatched_json);
+        assert!(res.is_err() == true);
+    }
+
+    /// Verify that deeply nested AST structures do not crash the
+    /// encoder or decoder
+    #[test]
+    fn test_codec_deeply_nested_structure() {
+        let mut expr = Expr::Literal {
+            val: Value::Number { val: 0 },
+        };
+        let mut interner = Interner::new();
+        for _ in 0..20 {
+            expr = Expr::Binop {
+                op: BinOp::Add,
+                expr1: Box::new(expr),
+                expr2: Box::new(Expr::Literal {
+                    val: Value::Number { val: 1 },
+                }),
+            };
+        }
+
+        let encoded = encode_expr(&expr, &interner);
+        let json_str = serde_json::to_string(&encoded).unwrap();
+        let decoded_net: NetExpr = serde_json::from_str(&json_str).unwrap();
+        let decoded = decode_expr(decoded_net, &mut interner);
+
+        assert_eq!(format!("{}", expr), format!("{}", decoded));
+    }
 }

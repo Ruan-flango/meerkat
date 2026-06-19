@@ -49,31 +49,19 @@ impl ServiceNetId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MeerkatMessage {
     /// Ping for testing
-    Ping {
-        content: String,
-    },
+    Ping { content: String },
 
     /// Pong response
-    Pong {
-        content: String,
-    },
+    Pong { content: String },
 
     /// Peer announcement with their canonical `Address`
-    Announce {
-        peer_addr: Address,
-    },
+    Announce { peer_addr: Address },
 
     /// Transaction message (for future use)
-    Transaction {
-        tx_id: u64,
-        payload: Vec<u8>,
-    },
+    Transaction { tx_id: u64, payload: Vec<u8> },
 
     /// Propagation message (for future use)
-    Propagation {
-        var_id: u64,
-        new_value: Vec<u8>,
-    },
+    Propagation { var_id: u64, new_value: Vec<u8> },
 
     /// Request to look up a member of a service on a remote node
     LookupRequest {
@@ -89,16 +77,10 @@ pub enum MeerkatMessage {
     },
 
     /// Response to a `LookupRequest` with the serialized value
-    LookupResponse {
-        request_id: u64,
-        value: NetValue,
-    },
+    LookupResponse { request_id: u64, value: NetValue },
 
     /// Response indicating lookup failed
-    LookupError {
-        request_id: u64,
-        error: String,
-    },
+    LookupError { request_id: u64, error: String },
 
     /// Execute an action on a remote service
     ActionRequest {
@@ -150,17 +132,13 @@ pub enum MeerkatMessage {
     },
 
     /// Acknowledgement that an `Abort` was processed on a participant
-    AbortResponse {
-        request_id: u64,
-    },
+    AbortResponse { request_id: u64 },
 
     /// Sent by an owner when it parks a transactional request on a
     /// wait queue (wait-die wait): tells the waiting originator the
     /// request is alive and still queued, so it keeps waiting
     /// instead of timing out
-    WaitParked {
-        request_id: u64,
-    },
+    WaitParked { request_id: u64 },
 }
 
 /// Errors that can occur when sending messages
