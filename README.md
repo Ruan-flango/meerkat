@@ -40,6 +40,9 @@ cargo run -- -s -f meerkat/tests/s1.mkt
 
 # Connect to a remote service and run tests
 cargo run -- -f meerkat/tests/test_client.mkt -i "<Service URL>"
+
+# Run an integration test with a distributed server and client
+python3 scripts/mkn.py scripts/manifest_dist_commit.json
 ```
 
 ## License
