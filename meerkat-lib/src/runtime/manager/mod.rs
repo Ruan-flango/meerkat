@@ -231,35 +231,50 @@ impl Manager {
         let mut env: Vec<(Symbol, Value)> = vec![];
         let svc_name = name;
 
+        let mut txn = Transaction::new(TxnId::new(self.node_id));
+        let mut init_error = None;
+
         for decl in decls {
             match decl {
                 Decl::VarDecl { name, val } => {
-                    let value = eval(
+                    let value = match eval(
                         &val,
                         &env,
                         &mut EvalContext {
                             manager: self,
                             service_name: svc_name,
-                            txn: None,
+                            txn: Some(&mut txn),
                         },
                     )
-                    .await?;
+                    .await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            init_error = Some(e);
+                            break;
+                        }
+                    };
                     env.push((name, value.clone()));
                     if let Some(service) = self.services.get_mut(&svc_name) {
                         service.vars.insert(name, VarState::new(value));
                     }
                 }
                 Decl::DefDecl { name, val, .. } => {
-                    let value = eval(
+                    let value = match eval(
                         &val,
                         &env,
                         &mut EvalContext {
                             manager: self,
                             service_name: svc_name,
-                            txn: None,
+                            txn: Some(&mut txn),
                         },
                     )
-                    .await?;
+                    .await {
+                            Ok(v) => v,
+                        Err(e) => {
+                            init_error = Some(e);
+                            break;
+                        }
+                    };
                     env.push((name, value.clone()));
                     if let Some(service) = self.services.get_mut(&svc_name) {
                         service.vars.insert(name, VarState::new(value));
@@ -267,12 +282,37 @@ impl Manager {
                     }
                 }
                 Decl::TableDecl { .. } => {
-                    return Err(EvalError::NotImplemented);
+                    // we still need to release locks, so no longer return directly after 
+                    // encountering a TableDecl
+                    init_error = Some(EvalError::NotImplemented);
+                    break;
                 }
             }
+        };
+
+        // code for handling transaction errors copied over from execute_action_with_txn
+
+
+        if init_error.is_none() {
+            self.apply_committed_writes(&txn).await;
+            for addr in txn.participants.iter().cloned().collect::<Vec<_>>() {
+                let _ = self.send_commit(addr, &txn.id).await;
+            }
+        } else {
+            // Execution failed: discard buffered writes and abort participants.
+            for addr in txn.participants.iter().cloned().collect::<Vec<_>>() {
+                self.send_abort(addr, &txn.id).await;
+            }
+            self.services.remove(&svc_name);
         }
 
-        Ok(())
+        // Release all locks held locally (always, even on error)
+        self.release_locks(&txn.locked, &txn.id);
+
+        match init_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Lookup a variable or def's value within a service
