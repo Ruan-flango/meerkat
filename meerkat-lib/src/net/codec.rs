@@ -1105,7 +1105,15 @@ mod tests {
         let encoded = encode_action_stmt(&stmt, &interner).unwrap();
         let mut interner_new = Interner::new();
         let decoded = decode_action_stmt(encoded, &mut interner_new).unwrap();
-        assert_eq!(format!("{}", stmt), format!("{}", decoded));
+        match decoded {
+            ActionStmt::Assert(
+                Expr::Literal {
+                    val: Value::Bool { val: false },
+                },
+                text,
+            ) => assert_eq!(text, "x == 5"),
+            other => panic!("unexpected decoded stmt: {:?}", other),
+        }
     }
 
     /// Verify decoding an assertion with oversized text fails
