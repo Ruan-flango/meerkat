@@ -139,6 +139,30 @@ pub enum MeerkatMessage {
     /// request is alive and still queued, so it keeps waiting
     /// instead of timing out
     WaitParked { request_id: u64 },
+
+    /// #24: subscribe `listener_service.listener_def` (living on the sender's
+    /// node) as a listener on `service.member` (on this node). The owner
+    /// registers it and replies with an initial `Update` carrying the current
+    /// value. Names are strings; symbols are interner-local.
+    RequestUpdates {
+        request_id: u64,
+        service: String,
+        member: String,
+        listener_service: String,
+        listener_def: String,
+        reply_to: String,
+    },
+
+    /// #24: tell a remote listener that `source_service.member` changed (also
+    /// used for the initial value on subscribe). The receiver caches `value`
+    /// and recomputes `listener_def`.
+    Update {
+        listener_service: String,
+        listener_def: String,
+        source_service: String,
+        member: String,
+        value: NetValue,
+    },
 }
 
 /// Errors that can occur when sending messages

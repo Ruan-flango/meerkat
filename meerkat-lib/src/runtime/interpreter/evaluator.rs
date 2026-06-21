@@ -255,6 +255,18 @@ pub async fn eval(
             service_name,
             member_name,
         } => {
+            // #24: during a reactive recompute the cross-service deps are already
+            // cached, so resolve from the cache and skip the lookup (which for a
+            // remote service would be a network round-trip).
+            if let Some(v) = ctx
+                .manager
+                .reactive_cache
+                .as_ref()
+                .and_then(|c| c.get(&(service_name, member_name)))
+                .cloned()
+            {
+                return Ok(v);
+            }
             // The `Manager` determines whether the service is local or
             // remote
             ctx.manager

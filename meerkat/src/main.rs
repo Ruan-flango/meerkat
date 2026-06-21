@@ -515,6 +515,41 @@ async fn run_server(
                     // abort just released.
                     wake_ready(&mut manager, freed).await;
                 }
+                MeerkatMessage::RequestUpdates {
+                    service,
+                    member,
+                    listener_service,
+                    listener_def,
+                    reply_to,
+                    ..
+                } => {
+                    manager
+                        .handle_request_updates(
+                            service,
+                            member,
+                            listener_service,
+                            listener_def,
+                            reply_to,
+                        )
+                        .await;
+                }
+                MeerkatMessage::Update {
+                    listener_service,
+                    listener_def,
+                    source_service,
+                    member,
+                    value,
+                } => {
+                    manager
+                        .handle_update(
+                            listener_service,
+                            listener_def,
+                            source_service,
+                            member,
+                            value,
+                        )
+                        .await;
+                }
                 MeerkatMessage::Ping { .. }
                 | MeerkatMessage::Pong { .. }
                 | MeerkatMessage::Announce { .. }
