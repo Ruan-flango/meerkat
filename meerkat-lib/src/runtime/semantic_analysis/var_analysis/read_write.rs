@@ -3,6 +3,73 @@ use crate::runtime::interner::Symbol;
 use std::collections::HashSet;
 
 impl Expr {
+    /// Collect every cross-service reference `(service, member)` appearing
+    /// anywhere in this expression. Counterpart to `free_var`, which drops
+    /// `MemberAccess`; issue #24 needs these to know which remote members a
+    /// def must subscribe to. Symbols are interner-local, resolved to strings
+    /// only at the network boundary.
+    pub fn cross_service_deps(&self) -> HashSet<(Symbol, Symbol)> {
+        match self {
+            Expr::Literal { .. } | Expr::Table { .. } | Expr::Variable { .. } => HashSet::new(),
+            Expr::MemberAccess {
+                service_name,
+                member_name,
+            } => HashSet::from([(*service_name, *member_name)]),
+            Expr::KeyVal { value, .. } => value.cross_service_deps(),
+            Expr::Tuple { val } => {
+                let mut deps = HashSet::new();
+                for item in val {
+                    deps.extend(item.cross_service_deps());
+                }
+                deps
+            }
+            Expr::Unop { expr, .. } => expr.cross_service_deps(),
+            Expr::Binop { expr1, expr2, .. } => {
+                let mut deps = expr1.cross_service_deps();
+                deps.extend(expr2.cross_service_deps());
+                deps
+            }
+            Expr::If { cond, expr1, expr2 } => {
+                let mut deps = cond.cross_service_deps();
+                deps.extend(expr1.cross_service_deps());
+                deps.extend(expr2.cross_service_deps());
+                deps
+            }
+            Expr::Func { body, .. } => body.cross_service_deps(),
+            Expr::Call { func, args } => {
+                let mut deps = func.cross_service_deps();
+                for arg in args {
+                    deps.extend(arg.cross_service_deps());
+                }
+                deps
+            }
+            Expr::Action(stmts) => {
+                let mut deps = HashSet::new();
+                for stmt in stmts {
+                    match stmt {
+                        ActionStmt::Let { expr, .. } => deps.extend(expr.cross_service_deps()),
+                        ActionStmt::Expr(expr) => deps.extend(expr.cross_service_deps()),
+                        ActionStmt::Do(expr) => deps.extend(expr.cross_service_deps()),
+                        ActionStmt::Assert(expr, _) => deps.extend(expr.cross_service_deps()),
+                        ActionStmt::Assign { expr, .. } => deps.extend(expr.cross_service_deps()),
+                        ActionStmt::Insert { row, .. } => deps.extend(row.cross_service_deps()),
+                    }
+                }
+                deps
+            }
+            Expr::Select { where_clause, .. } => where_clause.cross_service_deps(),
+            Expr::Fold {
+                operation,
+                identity,
+                ..
+            } => {
+                let mut deps = operation.cross_service_deps();
+                deps.extend(identity.cross_service_deps());
+                deps
+            }
+        }
+    }
+
     /// Returns the free variables in `self` with respect to `var_binded`
     ///
     /// This is used for:

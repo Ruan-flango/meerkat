@@ -20,6 +20,13 @@ pub struct Service {
     pub vars: HashMap<Symbol, VarState>,
     pub defs: HashMap<Symbol, Expr>, // original def expressions for re-evaluation
     pub dep: DependAnalysis,         // dependency graph + topo order
+    /// #24: who depends on each member: member -> {(listener service id, def)}.
+    pub listeners: HashMap<Symbol, HashSet<(ServiceNetId, Symbol)>>,
+    /// #24: cached values of each def's cross-service deps:
+    /// def -> {(source service, member) -> value}.
+    pub dep_cache: HashMap<Symbol, HashMap<(Symbol, Symbol), Value>>,
+    /// #24: each def's direct cross-service deps as (service, member) symbols.
+    pub dep_remote: HashMap<Symbol, HashSet<(Symbol, Symbol)>>,
 }
 
 /// A remote request parked on a variable's wait queue because the requesting
@@ -212,6 +219,19 @@ impl Manager {
     ) -> Result<(), EvalError> {
         let dep = calc_dep_srv(&decls);
 
+        // #24: extract each def's direct cross-service deps now, while we still
+        // own `decls`. free_var drops MemberAccess, so this is the only place a
+        // reference like `s1.y` becomes visible to the runtime.
+        let mut dep_remote: HashMap<Symbol, HashSet<(Symbol, Symbol)>> = HashMap::new();
+        for decl in &decls {
+            if let Decl::DefDecl { name, val, .. } = decl {
+                let refs = val.cross_service_deps();
+                if !refs.is_empty() {
+                    dep_remote.insert(*name, refs);
+                }
+            }
+        }
+
         let id = self.compute_service_net_id(name);
         // Register the service (with its real `ServiceNetId`) before
         // evaluating any declarations, so action closures built during
@@ -225,6 +245,9 @@ impl Manager {
                 vars: HashMap::new(),
                 defs: HashMap::new(),
                 dep,
+                listeners: HashMap::new(),
+                dep_cache: HashMap::new(),
+                dep_remote,
             },
         );
 
@@ -296,12 +319,51 @@ impl Manager {
             }
         }
 
-        // code for handling transaction errors copied over from execute_action_with_txn
-
+        // #87: commit on success, abort and roll back on failure (pattern from
+        // execute_action_with_txn).
         if init_error.is_none() {
             self.apply_committed_writes(&txn).await;
             for addr in txn.participants.iter().cloned().collect::<Vec<_>>() {
                 let _ = self.send_commit(addr, &txn.id).await;
+            }
+
+            // #24: now that init succeeded, register listener edges so a change to
+            // a member notifies the defs that depend on it. Same-service deps come
+            // from dep_graph; cross-service deps come from dep_remote, where a local
+            // owner is wired in-process and a remote owner is subscribed over the
+            // wire. Only runs on the success path: a rolled-back service must not
+            // register listeners.
+            if let Some(this_id) = self.services.get(&svc_name).map(|s| s.id.clone()) {
+                let mut edges: Vec<(Symbol, Symbol, Symbol)> = Vec::new();
+                if let Some(s) = self.services.get(&svc_name) {
+                    for (def_name, deps) in &s.dep.dep_graph {
+                        if s.defs.contains_key(def_name) {
+                            for dep_member in deps {
+                                edges.push((svc_name, *dep_member, *def_name));
+                            }
+                        }
+                    }
+                    for (def_name, refs) in &s.dep_remote {
+                        for (owner, member) in refs {
+                            edges.push((*owner, *member, *def_name));
+                        }
+                    }
+                }
+                for (owner, member, listener_def) in edges {
+                    if self.services.contains_key(&owner) {
+                        if let Some(owner_svc) = self.services.get_mut(&owner) {
+                            owner_svc
+                                .listeners
+                                .entry(member)
+                                .or_default()
+                                .insert((this_id.clone(), listener_def));
+                        }
+                    } else {
+                        // remote owner: subscribe over the wire so future changes push.
+                        self.subscribe_remote(owner, member, this_id.clone(), listener_def)
+                            .await;
+                    }
+                }
             }
         } else {
             // Execution failed: discard buffered writes and abort participants.
@@ -493,71 +555,86 @@ impl Manager {
     }
 
     async fn propagate(&mut self, service_name: Symbol, changed_var: Symbol) {
-        // collect defs that need re-evaluation in topo order
-        let topo_order: Vec<Symbol> = self
-            .services
-            .get(&service_name)
-            .map(|s| s.dep.topo_order.clone())
-            .unwrap_or_default();
+        // #24: event-driven reactivity over the listener graph. A change to a
+        // member notifies its listeners; each local listener recomputes from
+        // current values and, if its value changes, cascades to its own
+        // listeners. The worklist is keyed by (service, member) so a cascade can
+        // cross local service boundaries. A listener resolving to another node is
+        // notified over the wire in a later stage.
+        let mut worklist: Vec<(Symbol, Symbol)> = vec![(service_name, changed_var)];
 
-        for def_name in topo_order {
-            let needs_update = self
+        while let Some((svc, member)) = worklist.pop() {
+            let listeners: Vec<(ServiceNetId, Symbol)> = self
                 .services
-                .get(&service_name)
-                .and_then(|s| s.dep.dep_vars.get(&def_name))
-                .map(|dep_vars| dep_vars.contains(&changed_var))
-                .unwrap_or(false);
+                .get(&svc)
+                .and_then(|s| s.listeners.get(&member))
+                .map(|set| set.iter().cloned().collect())
+                .unwrap_or_default();
 
-            let is_def = self
-                .services
-                .get(&service_name)
-                .map(|s| s.defs.contains_key(&def_name))
-                .unwrap_or(false);
-
-            if needs_update && is_def {
-                // build env from current var values
-                let expr = self
+            for (listener_id, listener_def) in listeners {
+                let listener_svc = match self
                     .services
-                    .get(&service_name)
-                    .and_then(|s| s.defs.get(&def_name))
-                    .cloned();
+                    .iter()
+                    .find(|(_, s)| s.id == listener_id)
+                    .map(|(name, _)| *name)
+                {
+                    Some(n) => n,
+                    None => continue,
+                };
 
-                if let Some(expr) = expr {
-                    let env: Vec<(Symbol, Value)> = self
-                        .services
-                        .get(&service_name)
-                        .map(|s| s.vars.iter().map(|(k, v)| (*k, v.value.clone())).collect())
-                        .unwrap_or_default();
+                let expr = match self
+                    .services
+                    .get(&listener_svc)
+                    .and_then(|s| s.defs.get(&listener_def))
+                    .cloned()
+                {
+                    Some(e) => e,
+                    None => continue,
+                };
 
-                    let value = match eval(
-                        &expr,
-                        &env,
-                        &mut EvalContext {
-                            manager: self,
-                            service_name,
-                            txn: None,
-                        },
-                    )
-                    .await
-                    {
-                        Ok(v) => v,
-                        Err(e) => {
-                            // Propagation is best-effort; durable retry of failed
-                            // updates is tracked under issue #24 (async updates).
-                            log::warn!(
-                                "propagation of def '{}' failed: {}",
-                                self.interner.get(def_name),
-                                e
-                            );
-                            continue;
-                        }
-                    };
+                let env: Vec<(Symbol, Value)> = self
+                    .services
+                    .get(&listener_svc)
+                    .map(|s| s.vars.iter().map(|(k, v)| (*k, v.value.clone())).collect())
+                    .unwrap_or_default();
 
-                    if let Some(service) = self.services.get_mut(&service_name) {
-                        if let Some(var_state) = service.vars.get_mut(&def_name) {
-                            var_state.value = value;
-                        }
+                let value = match eval(
+                    &expr,
+                    &env,
+                    &mut EvalContext {
+                        manager: self,
+                        service_name: listener_svc,
+                        txn: None,
+                    },
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!(
+                            "propagation of def '{}' failed: {}",
+                            self.interner.get(listener_def),
+                            e
+                        );
+                        continue;
                     }
+                };
+
+                let changed = match self
+                    .services
+                    .get_mut(&listener_svc)
+                    .and_then(|s| s.vars.get_mut(&listener_def))
+                {
+                    Some(var_state) => {
+                        let differs = var_state.value != value;
+                        var_state.value = value;
+                        differs
+                    }
+                    None => false,
+                };
+
+                if changed {
+                    worklist.push((listener_svc, listener_def));
                 }
             }
         }
@@ -1453,6 +1530,131 @@ impl Default for Manager {
 mod tests {
     use super::*;
     use crate::ast::{Decl, Expr, Value};
+
+    // #24: cross_service_deps pulls out exactly the (service, member) symbols
+    // referenced via MemberAccess, and nothing for a purely local expression.
+    #[test]
+    fn test_cross_service_deps_extraction() {
+        let tc = TestContext::new();
+        // z = s1.y + 2  ->  {(s1, y)}
+        let z_expr = Expr::Binop {
+            op: crate::ast::BinOp::Add,
+            expr1: Box::new(Expr::MemberAccess {
+                service_name: tc.s1,
+                member_name: tc.y,
+            }),
+            expr2: Box::new(Expr::Literal {
+                val: Value::Number { val: 2 },
+            }),
+        };
+        assert_eq!(
+            z_expr.cross_service_deps(),
+            std::collections::HashSet::from([(tc.s1, tc.y)])
+        );
+        // y = x + 1  ->  {} (no cross-service references)
+        let y_expr = Expr::Binop {
+            op: crate::ast::BinOp::Add,
+            expr1: Box::new(Expr::Variable { name: tc.x }),
+            expr2: Box::new(Expr::Literal {
+                val: Value::Number { val: 1 },
+            }),
+        };
+        assert!(y_expr.cross_service_deps().is_empty());
+    }
+
+    // #24: a def in s2 that reads s1.y updates eagerly when s1.x changes,
+    // driven by the listener cascade rather than a lazy re-lookup.
+    #[tokio::test]
+    async fn test_cross_service_def_updates_eagerly() {
+        let mut tc = TestContext::new();
+        let z = tc.manager.interner.insert("z");
+
+        // service s1 { var x = 1; pub def y = x + 1; }
+        let s1_decls = vec![
+            Decl::VarDecl {
+                name: tc.x,
+                val: Expr::Literal {
+                    val: Value::Number { val: 1 },
+                },
+            },
+            Decl::DefDecl {
+                name: tc.y,
+                val: Expr::Binop {
+                    op: crate::ast::BinOp::Add,
+                    expr1: Box::new(Expr::Variable { name: tc.x }),
+                    expr2: Box::new(Expr::Literal {
+                        val: Value::Number { val: 1 },
+                    }),
+                },
+                is_pub: true,
+            },
+        ];
+        tc.manager.create_service(tc.s1, s1_decls).await.unwrap();
+
+        // service s2 { pub def z = s1.y + 2; }
+        let s2_decls = vec![Decl::DefDecl {
+            name: z,
+            val: Expr::Binop {
+                op: crate::ast::BinOp::Add,
+                expr1: Box::new(Expr::MemberAccess {
+                    service_name: tc.s1,
+                    member_name: tc.y,
+                }),
+                expr2: Box::new(Expr::Literal {
+                    val: Value::Number { val: 2 },
+                }),
+            },
+            is_pub: true,
+        }];
+        tc.manager.create_service(tc.s2, s2_decls).await.unwrap();
+
+        // initial z = (1 + 1) + 2 = 4
+        assert_eq!(
+            tc.manager
+                .services
+                .get(&tc.s2)
+                .unwrap()
+                .vars
+                .get(&z)
+                .unwrap()
+                .value,
+            Value::Number { val: 4 }
+        );
+
+        // s2.z is registered as a listener on s1.y
+        let on_y = tc
+            .manager
+            .services
+            .get(&tc.s1)
+            .unwrap()
+            .listeners
+            .get(&tc.y)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            on_y.iter().any(|(_, d)| *d == z),
+            "s2.z should be registered as a listener on s1.y"
+        );
+
+        // s1.x = 4  ->  s1.y = 5  ->  s2.z = 7, eagerly via the cascade
+        tc.manager
+            .assign(tc.s1, tc.x, Value::Number { val: 4 }, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tc.manager
+                .services
+                .get(&tc.s2)
+                .unwrap()
+                .vars
+                .get(&z)
+                .unwrap()
+                .value,
+            Value::Number { val: 7 },
+            "s2.z should update eagerly through the cross-service listener cascade"
+        );
+    }
 
     struct TestContext {
         manager: Manager,
