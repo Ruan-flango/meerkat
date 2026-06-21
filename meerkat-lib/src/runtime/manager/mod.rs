@@ -1795,6 +1795,7 @@ mod tests {
         // If a transaction fails after a read, its read lock must still
         // be released
         let mut tc = manager_with_x().await;
+        let last_txn = x_state(&tc).latest_write_txn.clone();
         let stmts = vec![ActionStmt::Assert(
             Expr::Variable { name: tc.x },
             "x".to_string(),
@@ -1805,7 +1806,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(x_state(&tc).value, Value::Number { val: 0 });
         // this is probably wrong? since the initialization of the manager should have involved a txn
-        assert!(x_state(&tc).latest_write_txn.is_none());
+        assert_eq!(x_state(&tc).latest_write_txn, last_txn);
         assert_x_unlocked(&tc);
     }
 
