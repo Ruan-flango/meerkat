@@ -19,6 +19,29 @@ service type_suite {
     // Mixed parameters, single unqualified parameter, higher order parameters
     pub def d_mixed: (int, string) -> bool =
         fn (a: int, b: string) => true;
+
+    // Non-nested cases
+    def d_non_nested: int -> bool = fn (x: int) => true;
+
+    // Right-nested (nesting in return type position)
+    def d_right_nested_implicit: int -> bool -> bool =
+        fn (x: int) => fn (y: bool) => true;
+    def d_right_nested_explicit: int -> (bool -> bool) =
+        fn (x: int) => fn (y: bool) => true;
+
+    // Left-nested (nesting in parameter position)
+    def d_left_nested: (int -> bool) -> bool =
+        fn (f: int -> bool) => true;
+
+    // Deeply left-nested
+    def d_deep_left_nested: ((int -> bool) -> bool) -> bool =
+        fn (f: (int -> bool) -> bool) => true;
+
+    // Mixed nesting cases
+    def d_mixed_nested_1: (int -> bool) -> (bool -> bool) =
+        fn (f: int -> bool) => fn (s: bool) => true;
+    def d_mixed_nested_2: (int -> (bool -> bool)) -> bool =
+        fn (f: int -> (bool -> bool)) => true;
 }
 
 @test(type_suite) {
@@ -41,10 +64,42 @@ service type_suite {
     let l_mixed: (int, bool) -> bool =
         fn (x: int, y) => true;
 
+    // Non-nested case
+    let l_non_nested: int -> bool = fn (x: int) => true;
+
+    // Right-nested (nesting in return type position)
+    let l_right_nested_implicit: int -> bool -> bool =
+        fn (x: int) => fn (y: bool) => true;
+    let l_right_nested_explicit: int -> (bool -> bool) =
+        fn (x: int) => fn (y: bool) => true;
+
+    // Left-nested (nesting in parameter position)
+    let l_left_nested: (int -> bool) -> bool =
+        fn (f: int -> bool) => true;
+
+    // Deeply left-nested
+    let l_deep_left_nested: ((int -> bool) -> bool) -> bool =
+        fn (f: (int -> bool) -> bool) => true;
+
+    // Mixed nesting cases
+    let l_mixed_nested_1: (int -> bool) -> (bool -> bool) =
+        fn (f: int -> bool) => fn (s: bool) => true;
+    let l_mixed_nested_2: (int -> (bool -> bool)) -> bool =
+        fn (f: int -> (bool -> bool)) => true;
+
     // Verify executions
     assert(l_int == 100);
     assert(l_func());
     assert(l_single_param(5) == 5);
     assert(l_arrow(1)("a"));
     assert(l_mixed(1, "untyped"));
+
+    // Verify exhaustive nested cases
+    assert(l_non_nested(1));
+    assert(l_right_nested_implicit(1)(true));
+    assert(l_right_nested_explicit(1)(true));
+    assert(l_left_nested(fn (x: int) => true));
+    assert(l_deep_left_nested(fn (f: int -> bool) => true));
+    assert(l_mixed_nested_1(fn (x: int) => true)(true));
+    assert(l_mixed_nested_2(fn (x: int) => fn (y: bool) => true));
 }

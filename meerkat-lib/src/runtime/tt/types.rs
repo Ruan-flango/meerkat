@@ -55,7 +55,19 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, ")")
             }
-            Type::Func(t1, t2) => write!(f, "{} -> {}", t1, t2),
+            Type::Func(t1, t2) => {
+                // Determine if the left-hand side is a function type
+                // to preserve right-associativity during formatting
+                let is_func = match &**t1 {
+                    Type::Func(_, _) => true,
+                    Type::Int | Type::String | Type::Bool | Type::Unit | Type::Tuple(_) => false,
+                };
+                if is_func {
+                    write!(f, "({}) -> {}", t1, t2)
+                } else {
+                    write!(f, "{} -> {}", t1, t2)
+                }
+            }
         }
     }
 }
@@ -77,5 +89,46 @@ impl std::fmt::Display for Param {
         } else {
             write!(f, "{}", self.name)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that `Type` formats nested function types to
+    /// preserve associativity
+    #[test]
+    fn test_nested_type_formatting() {
+        // case 1: (int -> bool) -> string
+        let ty1 = Type::Func(
+            Box::new(Type::Func(Box::new(Type::Int), Box::new(Type::Bool))),
+            Box::new(Type::String),
+        );
+        assert_eq!(ty1.to_string(), "(int -> bool) -> string");
+
+        // case 2: int -> bool -> string (which is int -> (bool -> string))
+        let ty2 = Type::Func(
+            Box::new(Type::Int),
+            Box::new(Type::Func(Box::new(Type::Bool), Box::new(Type::String))),
+        );
+        assert_eq!(ty2.to_string(), "int -> bool -> string");
+
+        // case 3: ((int -> string) -> bool) -> unit
+        let ty3 = Type::Func(
+            Box::new(Type::Func(
+                Box::new(Type::Func(Box::new(Type::Int), Box::new(Type::String))),
+                Box::new(Type::Bool),
+            )),
+            Box::new(Type::Unit),
+        );
+        assert_eq!(ty3.to_string(), "((int -> string) -> bool) -> unit");
+
+        // case 4: (int -> bool) -> (string -> unit)
+        let ty4 = Type::Func(
+            Box::new(Type::Func(Box::new(Type::Int), Box::new(Type::Bool))),
+            Box::new(Type::Func(Box::new(Type::String), Box::new(Type::Unit))),
+        );
+        assert_eq!(ty4.to_string(), "(int -> bool) -> string -> unit");
     }
 }
