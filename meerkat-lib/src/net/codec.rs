@@ -875,7 +875,7 @@ mod tests {
 
         let stmt1 = ActionStmt::Let {
             name: var_x,
-            ty: None,
+            ty: Some(Type::Int),
             expr: Expr::Literal {
                 val: Value::Int { val: 42 },
             },
@@ -927,12 +927,12 @@ mod tests {
         let original_value = Value::Closure {
             params: vec![Param {
                 name: param_name,
-                ty: None,
+                ty: Some(Type::String),
             }],
             body: Box::new(body),
             env: vec![(env_key, env_val)],
             service_name: service,
-            return_ty: None,
+            return_ty: Some(Type::String),
         };
 
         let encoded = encode_value(&original_value, &interner_orig).unwrap();
@@ -1049,12 +1049,12 @@ mod tests {
         let func_expr = Expr::Func {
             params: vec![Param {
                 name: param_name,
-                ty: None,
+                ty: Some(Type::Int),
             }],
             body: Box::new(Expr::Literal {
                 val: Value::Int { val: 9 },
             }),
-            return_ty: None,
+            return_ty: Some(Type::Int),
         };
         run_expr_test(&func_expr, &interner);
 
@@ -1064,12 +1064,12 @@ mod tests {
         let func_expr = Expr::Func {
             params: vec![Param {
                 name: param_name,
-                ty: None,
+                ty: Some(Type::Int),
             }],
             body: Box::new(Expr::Literal {
                 val: Value::Int { val: 9 },
             }),
-            return_ty: None,
+            return_ty: Some(Type::Int),
         };
         let call_expr = Expr::Call {
             func: Box::new(func_expr),
