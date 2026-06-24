@@ -231,48 +231,93 @@ impl Manager {
         let mut env: Vec<(Symbol, Value)> = vec![];
         let svc_name = name;
 
+        let mut txn = Transaction::new(TxnId::new(self.node_id));
+        let mut init_error = None;
+
         for decl in decls {
             match decl {
                 Decl::VarDecl { name, val } => {
-                    let value = eval(
+                    let value = match eval(
                         &val,
                         &env,
                         &mut EvalContext {
                             manager: self,
                             service_name: svc_name,
-                            txn: None,
+                            txn: Some(&mut txn),
                         },
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            init_error = Some(e);
+                            break;
+                        }
+                    };
                     env.push((name, value.clone()));
                     if let Some(service) = self.services.get_mut(&svc_name) {
-                        service.vars.insert(name, VarState::new(value));
+                        let mut var_value = VarState::new(value);
+                        var_value.latest_write_txn = Some(txn.id.clone());
+                        service.vars.insert(name, var_value);
                     }
                 }
                 Decl::DefDecl { name, val, .. } => {
-                    let value = eval(
+                    let value = match eval(
                         &val,
                         &env,
                         &mut EvalContext {
                             manager: self,
                             service_name: svc_name,
-                            txn: None,
+                            txn: Some(&mut txn),
                         },
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            init_error = Some(e);
+                            break;
+                        }
+                    };
                     env.push((name, value.clone()));
                     if let Some(service) = self.services.get_mut(&svc_name) {
-                        service.vars.insert(name, VarState::new(value));
+                        let mut var_value = VarState::new(value);
+                        var_value.latest_write_txn = Some(txn.id.clone());
+                        service.vars.insert(name, var_value);
                         service.defs.insert(name, val); // store original expr
                     }
                 }
                 Decl::TableDecl { .. } => {
-                    return Err(EvalError::NotImplemented);
+                    // we still need to release locks, so no longer return directly after
+                    // encountering a TableDecl
+                    init_error = Some(EvalError::NotImplemented);
+                    break;
                 }
             }
         }
 
-        Ok(())
+        // code for handling transaction errors copied over from execute_action_with_txn
+
+        if init_error.is_none() {
+            self.apply_committed_writes(&txn).await;
+            for addr in txn.participants.iter().cloned().collect::<Vec<_>>() {
+                let _ = self.send_commit(addr, &txn.id).await;
+            }
+        } else {
+            // Execution failed: discard buffered writes and abort participants.
+            for addr in txn.participants.iter().cloned().collect::<Vec<_>>() {
+                self.send_abort(addr, &txn.id).await;
+            }
+            self.services.remove(&svc_name);
+        }
+
+        // Release all locks held locally (always, even on error)
+        self.release_locks(&txn.locked, &txn.id);
+
+        match init_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Lookup a variable or def's value within a service
@@ -1750,6 +1795,7 @@ mod tests {
         // If a transaction fails after a read, its read lock must still
         // be released
         let mut tc = manager_with_x().await;
+        let last_txn = x_state(&tc).latest_write_txn.clone();
         let stmts = vec![ActionStmt::Assert(
             Expr::Variable { name: tc.x },
             "x".to_string(),
@@ -1759,7 +1805,10 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(x_state(&tc).value, Value::Number { val: 0 });
-        assert!(x_state(&tc).latest_write_txn.is_none());
+        // NOTE: changed this test case to check that the latest_write_txn is the txn that created
+        // the service and not none (as it was previously). Since this is changing a test case,
+        // please make sure to review it
+        assert_eq!(x_state(&tc).latest_write_txn, last_txn);
         assert_x_unlocked(&tc);
     }
 
@@ -2260,5 +2309,138 @@ mod tests {
             crate::runtime::txn::VarLock::WriteLocked(_)
         ));
         assert!(tc.manager.pending_txns.contains_key(&older));
+    }
+    #[tokio::test]
+    async fn test_create_service_uses_single_transaction() {
+        let mut tc = TestContext::new();
+        let decls = vec![
+            Decl::VarDecl {
+                name: tc.x,
+                val: Expr::Literal {
+                    val: Value::Number { val: 1 },
+                },
+            },
+            Decl::VarDecl {
+                name: tc.y,
+                val: Expr::Literal {
+                    val: Value::Number { val: 2 },
+                },
+            },
+            Decl::DefDecl {
+                name: tc.f,
+                val: Expr::Binop {
+                    op: crate::ast::BinOp::Add,
+                    expr1: Box::new(Expr::Variable { name: tc.x }),
+                    expr2: Box::new(Expr::Variable { name: tc.y }),
+                },
+                is_pub: true,
+            },
+        ];
+        tc.manager.create_service(tc.foo, decls).await.unwrap();
+
+        let foo = tc.manager.services.get(&tc.foo).unwrap();
+        let tid = foo.vars.get(&tc.x).unwrap().latest_write_txn.clone();
+        assert!(
+            tid.is_some(),
+            "init writes must record a writer txn from create_service"
+        );
+        // every var/def initialized by the same transaction
+        assert_eq!(foo.vars.get(&tc.y).unwrap().latest_write_txn, tid);
+        assert_eq!(foo.vars.get(&tc.f).unwrap().latest_write_txn, tid);
+    }
+
+    #[tokio::test]
+    async fn test_create_service_rolls_back_on_partial_failure() {
+        let mut tc = TestContext::new();
+        let decls = vec![
+            Decl::VarDecl {
+                name: tc.x,
+                val: Expr::Literal {
+                    val: Value::Number { val: 1 },
+                },
+            },
+            // adding a bool and number should be a type error
+            Decl::VarDecl {
+                name: tc.y,
+                val: Expr::Binop {
+                    op: crate::ast::BinOp::Add,
+                    expr1: Box::new(Expr::Literal {
+                        val: Value::Bool { val: true },
+                    }),
+                    expr2: Box::new(Expr::Literal {
+                        val: Value::Number { val: 1 },
+                    }),
+                },
+            },
+        ];
+        let result = tc.manager.create_service(tc.foo, decls).await;
+        assert!(result.is_err());
+        assert!(
+            tc.manager.services.is_empty(),
+            "no services should've been created"
+        );
+    }
+
+    // full disclosure: I'm not sure how to test that create_service actually occurs under a single transaction
+    // in the sense that a lock is truly acquired, so I had Claude write a test for me
+    #[tokio::test]
+    async fn test_create_service_read_conflicts_under_one_txn() {
+        let mut tc = TestContext::new();
+        tc.manager
+            .create_service(
+                tc.s1,
+                vec![Decl::VarDecl {
+                    name: tc.x,
+                    val: Expr::Literal {
+                        val: Value::Number { val: 7 },
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+
+        // Simulate another in-flight transaction holding a write lock on s1.x.
+        let ext = TxnId::new(tc.manager.node_id);
+        assert!(tc
+            .manager
+            .services
+            .get_mut(&tc.s1)
+            .unwrap()
+            .vars
+            .get_mut(&tc.x)
+            .unwrap()
+            .lock
+            .try_write(&ext));
+
+        // s2's init reads s1.x; under a real transaction this must fail to read-lock.
+        // since s2 is younger, it should die instead of waiting
+        let result = tc
+            .manager
+            .create_service(
+                tc.s2,
+                vec![Decl::DefDecl {
+                    name: tc.f,
+                    val: Expr::MemberAccess {
+                        service_name: tc.s1,
+                        member_name: tc.x,
+                    },
+                    is_pub: true,
+                }],
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(EvalError::WaitDieAbort(_))),
+            "init read must respect the lock"
+        );
+        assert!(
+            !tc.manager.services.contains_key(&tc.s2),
+            "failed init rolls back"
+        );
+        // the foreign lock is untouched
+        assert!(matches!(
+            tc.manager.services.get(&tc.s1).unwrap().vars.get(&tc.x).unwrap().lock,
+            crate::runtime::txn::VarLock::WriteLocked(ref t) if *t == ext
+        ));
     }
 }
