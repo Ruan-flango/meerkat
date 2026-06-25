@@ -10,7 +10,7 @@ use crate::net::ast::{
 use crate::runtime::ast::{ActionStmt, BinOp, Expr, Field, TableType, UnOp, Value};
 use crate::runtime::interner::Interner;
 use crate::runtime::limits::{MAX_IDENTIFIER_LENGTH, MAX_STRING_LITERAL_LENGTH, MAX_TYPE_DEPTH};
-use crate::runtime::tt::{Param, Type};
+use crate::runtime::tt::{Param, TupleType, Type};
 
 fn validate_identifier(s: &str) -> Result<()> {
     if s.len() > MAX_IDENTIFIER_LENGTH {
@@ -57,8 +57,11 @@ fn encode_type_internal(ty: &Type, depth: usize) -> Result<NetType> {
         Type::Bool => Ok(NetType::Bool),
         Type::Unit => Ok(NetType::Unit),
         Type::Tuple(ts) => {
+            if ts.len() < 2 {
+                return Err(Error::Message(format!("invalid tuple arity: {}", ts.len())));
+            }
             let mut encoded_ts = Vec::new();
-            for t in ts {
+            for t in ts.iter() {
                 encoded_ts.push(encode_type_internal(t, depth + 1)?);
             }
             Ok(NetType::Tuple(encoded_ts))
@@ -113,11 +116,19 @@ fn decode_type_internal(ty: NetType, depth: usize) -> Result<Type> {
         NetType::Bool => Ok(Type::Bool),
         NetType::Unit => Ok(Type::Unit),
         NetType::Tuple(ts) => {
+            if ts.len() < 2 {
+                return Err(Error::Message(format!(
+                    "invalid network tuple arity: {}",
+                    ts.len()
+                )));
+            }
             let mut decoded_ts = Vec::new();
             for t in ts {
                 decoded_ts.push(decode_type_internal(t, depth + 1)?);
             }
-            Ok(Type::Tuple(decoded_ts))
+            let tuple_type =
+                TupleType::new(decoded_ts).map_err(|e| Error::Message(e.to_string()))?;
+            Ok(Type::Tuple(tuple_type))
         }
         NetType::Func(t1, t2) => {
             let dt1 = decode_type_internal(*t1, depth + 1)?;
@@ -1401,5 +1412,36 @@ mod tests {
         let res = encode_type(&current_type);
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Error::LimitExceeded(_)));
+    }
+
+    /// Verify that `decode_type` rejects invalid network tuple arities
+    #[test]
+    fn test_codec_tuple_invalid_arity_decode() {
+        // Zero elements tuple
+        let zero_tuple = NetType::Tuple(vec![]);
+        let res_zero = decode_type(zero_tuple);
+        assert!(res_zero.is_err());
+        assert!(matches!(res_zero.unwrap_err(), Error::Message(_)));
+
+        // Singleton tuple
+        let singleton_tuple = NetType::Tuple(vec![NetType::Int]);
+        let res_single = decode_type(singleton_tuple);
+        assert!(res_single.is_err());
+        assert!(matches!(res_single.unwrap_err(), Error::Message(_)));
+    }
+
+    /// Verify round-trip encoding and decoding for a valid tuple type
+    #[test]
+    fn test_codec_tuple_valid_roundtrip() {
+        let original_type = Type::Tuple(TupleType::new(vec![Type::Int, Type::String]).unwrap());
+
+        let encoded_type = encode_type(&original_type).unwrap();
+        assert_eq!(
+            encoded_type,
+            NetType::Tuple(vec![NetType::Int, NetType::String])
+        );
+
+        let decoded_type = decode_type(encoded_type).unwrap();
+        assert_eq!(original_type, decoded_type);
     }
 }

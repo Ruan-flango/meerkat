@@ -4,7 +4,7 @@ grammar<'input>(
 );
 
 use crate::ast::{Stmt, ActionStmt, Decl, Expr, UnOp, BinOp, TableType, Field, Value};
-use crate::runtime::tt::{Type, Param};
+use crate::runtime::tt::{Type, Param, TupleType};
 use crate::runtime::interner::{Interner, Symbol};
 use lalrpop_util::ParseError;
 use crate::runtime::parser::lex::Token;
@@ -176,7 +176,7 @@ SimpleType: Type = {
         } else {
             let mut v = vec![t];
             v.append(&mut ts);
-            Type::Tuple(v)
+            Type::Tuple(TupleType::new(v).unwrap())
         }
     }
 }

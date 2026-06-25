@@ -188,13 +188,14 @@ fn test_ast_printer_type_display() {
     let interner = Interner::new();
     let printer = AstPrinter::new(&interner);
 
+    use meerkat_lib::runtime::tt::{TupleType, Type};
+
     // Create a type: (int, string) -> bool
-    let test_type = meerkat_lib::runtime::tt::Type::Func(
-        Box::new(meerkat_lib::runtime::tt::Type::Tuple(vec![
-            meerkat_lib::runtime::tt::Type::Int,
-            meerkat_lib::runtime::tt::Type::String,
-        ])),
-        Box::new(meerkat_lib::runtime::tt::Type::Bool),
+    let test_type = Type::Func(
+        Box::new(Type::Tuple(
+            TupleType::new(vec![Type::Int, Type::String]).unwrap(),
+        )),
+        Box::new(Type::Bool),
     );
 
     let formatted_some = printer.format_type_opt(&Some(test_type));
