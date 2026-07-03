@@ -156,6 +156,11 @@ pub fn parse_html_parts(
                 parts.push(HtmlPart::Text(std::mem::take(&mut text)));
             }
             // Collect the interpolation source up to the matching `}`.
+            // #39: brace depth counting does not account for a `}` inside a
+            // string literal within the interpolation (e.g. `{ "}" }`); such a
+            // brace would desync the counter. This mirrors the analogous
+            // paren-depth limitation documented in the html lexer; making both
+            // string-aware is tracked as a follow-up.
             let mut depth: usize = 1;
             let mut frag = String::new();
             let mut closed = false;

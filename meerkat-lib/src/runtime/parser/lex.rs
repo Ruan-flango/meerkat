@@ -75,37 +75,31 @@ fn skip_multi_line_comments<'b>(lex: &mut Lexer<'b, Token<'b>>) -> Skip {
 // literal `)` inside a string inside an interpolation is not accounted for and
 // would terminate the literal early; the current examples do not hit this.
 fn lex_html_literal<'b>(lex: &mut Lexer<'b, Token<'b>>) -> Option<&'b str> {
-    use logos::internal::LexerInternal;
-    // The matched token so far is `(` + optional whitespace + `<`. The inner
-    // text begins right after the `(`, i.e. at the start of the slice minus the
-    // consumed prefix. We reconstruct the inner start from the current span.
-    let span_start = lex.span().start;
-    let full = lex.source();
-    // Find the index of the `(` that opened this literal: it is span_start.
-    // Inner content starts just after `(`.
-    let inner_start = span_start + 1;
+    // On entry the current token is `(` + optional whitespace + `<`, so paren
+    // depth is 1 for that opening `(`. `remainder()` is the source after the
+    // `<`; scan it for the matching `)`, counting balanced parens (so parens
+    // inside a `{ f(x) }` interpolation do not terminate the literal).
+    let rem = lex.remainder();
     let mut depth: isize = 1;
-    loop {
-        match lex.read::<u8>() {
-            Some(b'(') => {
-                depth += 1;
-                lex.bump_unchecked(1);
-            }
-            Some(b')') => {
+    for (consumed, &byte) in rem.as_bytes().iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
                 depth -= 1;
                 if depth == 0 {
-                    let inner_end = lex.span().end; // position of the `)` byte
-                    lex.bump_unchecked(1); // consume the `)`
-                    return Some(&full[inner_start..inner_end]);
+                    // Extend the token through the closing `)` (a byte count;
+                    // `)` is ASCII so this lands on a char boundary).
+                    lex.bump(consumed + 1);
+                    // The token slice is now `( ... )`; the body is the slice
+                    // with the outer parens stripped.
+                    let full = lex.slice();
+                    return Some(&full[1..full.len() - 1]);
                 }
-                lex.bump_unchecked(1);
             }
-            None => return None, // unterminated html literal
-            _ => {
-                lex.bump_unchecked(1);
-            }
+            _ => {}
         }
     }
+    None // unterminated html literal
 }
 
 impl<'a> fmt::Display for Token<'a> {
