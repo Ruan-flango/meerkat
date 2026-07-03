@@ -205,3 +205,53 @@ impl Expr {
         }
     }
 }
+
+#[cfg(test)]
+mod html_dep_tests {
+    use crate::ast::{Expr, HtmlPart};
+    use crate::runtime::interner::Interner;
+    use std::collections::HashSet;
+
+    /// #39: the interpolated expression in an html template must surface as a
+    /// free variable, so the html def registers a dependency and re-renders
+    /// when that dependency changes (issue #24 propagation).
+    #[test]
+    fn test_html_free_var_tracks_interpolation() {
+        let mut interner = Interner::new();
+        let count = interner.insert("count");
+        let expr = Expr::Html {
+            parts: vec![
+                HtmlPart::Text("<p>".to_string()),
+                HtmlPart::Expr(Box::new(Expr::Variable { name: count })),
+                HtmlPart::Text("</p>".to_string()),
+            ],
+        };
+        let free = expr.free_var(&HashSet::new(), &HashSet::new());
+        assert!(
+            free.contains(&count),
+            "html interpolation must be a free var: {:?}",
+            free
+        );
+    }
+
+    /// #39: interpolations referencing another service surface as cross-service
+    /// dependencies too.
+    #[test]
+    fn test_html_cross_service_deps_tracks_interpolation() {
+        let mut interner = Interner::new();
+        let svc = interner.insert("counter");
+        let member = interner.insert("count");
+        let expr = Expr::Html {
+            parts: vec![HtmlPart::Expr(Box::new(Expr::MemberAccess {
+                service_name: svc,
+                member_name: member,
+            }))],
+        };
+        let deps = expr.cross_service_deps();
+        assert!(
+            deps.contains(&(svc, member)),
+            "html interpolation must surface cross-service dep: {:?}",
+            deps
+        );
+    }
+}

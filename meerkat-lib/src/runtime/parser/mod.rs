@@ -121,6 +121,91 @@ pub fn parse_repl(input: &str, interner: &mut Interner) -> ReplParseResult {
     }
 }
 
+/// #39: Split a raw html-literal body into parts and parse each `{...}`
+/// interpolation as an expression.
+///
+/// This is the single authoritative place that knows how an html template is
+/// decomposed: literal text is copied verbatim, and each brace-delimited
+/// interpolation is parsed via the same expression grammar used everywhere
+/// else (the `pub Expr` rule), so interpolations are ordinary expressions.
+///
+/// Braces nest: an interpolation runs from an opening `{` to its matching `}`,
+/// counting depth, so an interpolation containing braces is handled. A `{`
+/// with no matching `}` is a parse error.
+///
+/// Args:
+///     `raw` (`&str`): The inner html text (between the outer parens)
+///     `interner` (`&mut Interner`): The string interner instance
+///
+/// Returns:
+///     `Result<Vec<HtmlPart>, String>`: The parsed template parts, or an error
+pub fn parse_html_parts(
+    raw: &str,
+    interner: &mut Interner,
+) -> Result<Vec<crate::ast::HtmlPart>, String> {
+    use crate::ast::HtmlPart;
+
+    let mut parts: Vec<HtmlPart> = Vec::new();
+    let mut text = String::new();
+    let mut chars = raw.char_indices().peekable();
+
+    while let Some((_, c)) = chars.next() {
+        if c == '{' {
+            // Flush any accumulated literal text.
+            if !text.is_empty() {
+                parts.push(HtmlPart::Text(std::mem::take(&mut text)));
+            }
+            // Collect the interpolation source up to the matching `}`.
+            let mut depth: usize = 1;
+            let mut frag = String::new();
+            let mut closed = false;
+            for (_, ic) in chars.by_ref() {
+                match ic {
+                    '{' => {
+                        depth += 1;
+                        frag.push(ic);
+                    }
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            closed = true;
+                            break;
+                        }
+                        frag.push(ic);
+                    }
+                    _ => frag.push(ic),
+                }
+            }
+            if !closed {
+                return Err(
+                    "Parse error: unterminated { } interpolation in html literal".to_string(),
+                );
+            }
+            // Parse the fragment as a single expression via the public Expr rule.
+            let expr = parse_expr_fragment(frag.trim(), interner)?;
+            parts.push(HtmlPart::Expr(Box::new(expr)));
+        } else {
+            text.push(c);
+        }
+    }
+    if !text.is_empty() {
+        parts.push(HtmlPart::Text(text));
+    }
+    Ok(parts)
+}
+
+/// #39: Parse a single interpolation fragment into an `Expr` using the public
+/// `Expr` grammar rule, reusing the same lexer and parser as top-level code.
+fn parse_expr_fragment(src: &str, interner: &mut Interner) -> Result<crate::ast::Expr, String> {
+    let mut lex_stream = Vec::new();
+    for (t, span) in lex::Token::lexer(src).spanned() {
+        lex_stream.push((span.start, t, span.end));
+    }
+    meerkat::ExprParser::new()
+        .parse(src, interner, lex_stream)
+        .map_err(|e| format!("Parse error in html interpolation: {:?}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +328,101 @@ mod tests {
         } else {
             panic!("Expected Service Stmt");
         }
+    }
+
+    /// #39: verify the html-part splitter produces literal text and parsed
+    /// interpolation expressions in order.
+    #[test]
+    fn test_parse_html_parts_interpolation() {
+        use crate::ast::{Expr, HtmlPart};
+        let mut interner = Interner::new();
+        let parts = parse_html_parts("The count is {count}.", &mut interner).expect("should parse");
+        assert_eq!(parts.len(), 3, "expected text, expr, text: {:?}", parts);
+        match &parts[0] {
+            HtmlPart::Text(t) => assert_eq!(t, "The count is "),
+            other => panic!("expected Text, got {:?}", other),
+        }
+        match &parts[1] {
+            HtmlPart::Expr(e) => assert!(
+                matches!(**e, Expr::Variable { .. }),
+                "expected Variable, got {:?}",
+                e
+            ),
+            other => panic!("expected Expr, got {:?}", other),
+        }
+        match &parts[2] {
+            HtmlPart::Text(t) => assert_eq!(t, "."),
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    /// #39: no interpolation yields a single text part.
+    #[test]
+    fn test_parse_html_parts_text_only() {
+        use crate::ast::HtmlPart;
+        let mut interner = Interner::new();
+        let parts = parse_html_parts("<p>hello</p>", &mut interner).expect("should parse");
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(&parts[0], HtmlPart::Text(t) if t == "<p>hello</p>"));
+    }
+
+    /// #39: an unterminated interpolation is an error, not a panic.
+    #[test]
+    fn test_parse_html_parts_unterminated() {
+        let mut interner = Interner::new();
+        let res = parse_html_parts("count is {count", &mut interner);
+        assert!(res.is_err());
+    }
+
+    /// #39: the html literal lexes and parses through to an Expr::Html node.
+    /// (Stub stage: parts are empty; interpolation wiring is verified separately.)
+    #[test]
+    fn test_html_literal_parses() {
+        use crate::ast::{Decl, Expr, Stmt};
+        let mut interner = Interner::new();
+        let input = "service s { pub def h = (<p>hi</p>); }";
+        let res = parse_string(input, &mut interner);
+        assert!(res.is_ok(), "parse failed: {:?}", res);
+        let ast = res.unwrap();
+        match &ast[0] {
+            Stmt::Service { decls, .. } => match &decls[0] {
+                Decl::DefDecl { val, .. } => {
+                    assert!(
+                        matches!(val, Expr::Html { .. }),
+                        "expected Expr::Html, got {:?}",
+                        val
+                    );
+                }
+                other => panic!("expected DefDecl, got {:?}", other),
+            },
+            other => panic!("expected Service, got {:?}", other),
+        }
+    }
+
+    /// #39: the full pipeline parses an html def with an interpolation into an
+    /// Expr::Html whose parts include a parsed embedded expression.
+    #[test]
+    fn test_html_literal_full_parse() {
+        use crate::ast::{Decl, Expr, HtmlPart, Stmt};
+        let mut interner = Interner::new();
+        let input = "service webClient { pub def html = (<p>The count is {count}.</p>); }";
+        let res = parse_string(input, &mut interner);
+        assert!(res.is_ok(), "parse failed: {:?}", res);
+        let ast = res.unwrap();
+        let parts = match &ast[0] {
+            Stmt::Service { decls, .. } => match &decls[0] {
+                Decl::DefDecl {
+                    val: Expr::Html { parts },
+                    ..
+                } => parts,
+                other => panic!("expected DefDecl with Expr::Html, got {:?}", other),
+            },
+            other => panic!("expected Service, got {:?}", other),
+        };
+        // <p>The count is , {count}, .</p>
+        assert_eq!(parts.len(), 3, "parts: {:?}", parts);
+        assert!(matches!(&parts[0], HtmlPart::Text(t) if t == "<p>The count is "));
+        assert!(matches!(&parts[1], HtmlPart::Expr(e) if matches!(**e, Expr::Variable { .. })));
+        assert!(matches!(&parts[2], HtmlPart::Text(t) if t == ".</p>"));
     }
 }

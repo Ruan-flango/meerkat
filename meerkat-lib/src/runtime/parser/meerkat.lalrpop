@@ -58,6 +58,7 @@ extern {
         "||" => Token::OR_OR,
         "!" => Token::NOT_NOT,
         "strlit" => Token::StrLit(<&'input str>),
+        "htmllit" => Token::HtmlLit(<&'input str>),
         "ident" => Token::Ident(<&'input str>),
         "num" => Token::Number(<i32>),
         "{" => Token::LBrace,
@@ -229,9 +230,17 @@ SubExpr: Expr = {
     <s:Ident> "." <m:Ident> => Expr::MemberAccess { service_name: s, member_name: m },
 
     "action" "{" <stmts: ActionStmts> "}" => Expr::Action(stmts),
+
+    <h:"htmllit"> =>? {
+        // #39: split the raw html body into literal text and parsed
+        // interpolations. Reuses the same expression grammar for `{ }` blocks.
+        crate::runtime::parser::parse_html_parts(h, interner)
+            .map(|parts| Expr::Html { parts })
+            .map_err(|error| ParseError::User { error })
+    },
 }
 
-Expr: Expr = {
+pub Expr: Expr = {
     #[precedence(level="0")]
     SubExpr => <>,
 

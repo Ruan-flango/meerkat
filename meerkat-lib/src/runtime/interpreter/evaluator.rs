@@ -499,4 +499,27 @@ mod tests {
             other => panic!("Expected Err(EvalError::RuntimeError), got {:?}", other),
         }
     }
+
+    /// #39: an html template evaluates to a Value::Html whose rendered markup
+    /// has the interpolation substituted from the environment.
+    #[tokio::test]
+    async fn test_html_renders_with_interpolation() {
+        use crate::runtime::parser::parse_html_parts;
+        let mut manager = Manager::new(Interner::new());
+        let count = manager.interner.insert("count");
+        let parts = parse_html_parts("The count is {count}.", &mut manager.interner)
+            .expect("parse html parts");
+        let expr = Expr::Html { parts };
+        let env = vec![(count, Value::Int { val: 2 })];
+        let mut ctx = EvalContext {
+            manager: &mut manager,
+            service_name: Symbol::empty(),
+            txn: None,
+        };
+        let result = eval(&expr, &env, &mut ctx).await.unwrap();
+        match result {
+            Value::Html(html) => assert_eq!(html.as_str(), "The count is 2."),
+            other => panic!("expected Value::Html, got {:?}", other),
+        }
+    }
 }
