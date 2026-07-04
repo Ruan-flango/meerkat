@@ -234,8 +234,8 @@ SubExpr: Expr = {
     <h:"htmllit"> =>? {
         // #39: split the raw html body into literal text and parsed
         // interpolations. Reuses the same expression grammar for `{ }` blocks.
-        crate::runtime::parser::parse_html_parts(h, interner)
-            .map(|parts| Expr::Html { parts })
+        crate::runtime::parser::parse_template(h, interner)
+            .map(Expr::Html)
             .map_err(|error| ParseError::User { error })
     },
 }

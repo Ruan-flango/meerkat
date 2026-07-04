@@ -121,41 +121,27 @@ pub fn parse_repl(input: &str, interner: &mut Interner) -> ReplParseResult {
     }
 }
 
-/// #39: Split a raw html-literal body into parts and parse each `{...}`
-/// interpolation as an expression.
+/// #39: Parse the raw body of an HTML literal into an `HtmlTemplate`.
 ///
-/// This is the single authoritative place that knows how an html template is
-/// decomposed: literal text is copied verbatim, and each brace-delimited
-/// interpolation is parsed via the same expression grammar used everywhere
-/// else (the `pub Expr` rule), so interpolations are ordinary expressions.
+/// Lives in `runtime::parser` because it interns (via the expression parser),
+/// and only `parser`/`net::codec` may write to the append-only interner. The
+/// template representation itself is owned by `runtime::html`; this function
+/// builds one through the html builder without naming its internal parts.
 ///
-/// Braces nest: an interpolation runs from an opening `{` to its matching `}`,
-/// counting depth, so an interpolation containing braces is handled. A `{`
-/// with no matching `}` is a parse error.
-///
-/// Args:
-///     `raw` (`&str`): The inner html text (between the outer parens)
-///     `interner` (`&mut Interner`): The string interner instance
-///
-/// Returns:
-///     `Result<Vec<HtmlPart>, String>`: The parsed template parts, or an error
-pub fn parse_html_parts(
+/// Literal text is copied verbatim; each brace-delimited `{ ... }`
+/// interpolation is parsed as an expression through the public `Expr` rule.
+/// A `{` with no matching `}` is a parse error.
+pub fn parse_template(
     raw: &str,
     interner: &mut Interner,
-) -> Result<Vec<crate::ast::HtmlPart>, String> {
-    use crate::ast::HtmlPart;
-
-    let mut parts: Vec<HtmlPart> = Vec::new();
+) -> Result<crate::runtime::html::HtmlTemplate, String> {
+    let mut builder = crate::runtime::html::HtmlTemplateBuilder::new();
     let mut text = String::new();
     let mut chars = raw.char_indices().peekable();
 
     while let Some((_, c)) = chars.next() {
         if c == '{' {
-            // Flush any accumulated literal text.
-            if !text.is_empty() {
-                parts.push(HtmlPart::Text(std::mem::take(&mut text)));
-            }
-            // Collect the interpolation source up to the matching `}`.
+            builder.push_text(std::mem::take(&mut text).as_str());
             // #39: brace depth counting does not account for a `}` inside a
             // string literal within the interpolation (e.g. `{ "}" }`); such a
             // brace would desync the counter. This mirrors the analogous
@@ -186,24 +172,38 @@ pub fn parse_html_parts(
                     "Parse error: unterminated { } interpolation in html literal".to_string(),
                 );
             }
-            // Parse the fragment as a single expression via the public Expr rule.
             let expr = parse_expr_fragment(frag.trim(), interner)?;
-            parts.push(HtmlPart::Expr(Box::new(expr)));
+            builder.push_expr(expr);
         } else {
             text.push(c);
         }
     }
-    if !text.is_empty() {
-        parts.push(HtmlPart::Text(text));
-    }
-    Ok(parts)
+    builder.push_text(text.as_str());
+    Ok(builder.build())
 }
 
 /// #39: Parse a single interpolation fragment into an `Expr` using the public
 /// `Expr` grammar rule, reusing the same lexer and parser as top-level code.
+/// The identifier and string-literal length limits enforced by the top-level
+/// parser are applied here too, so interpolations cannot bypass those limits.
 fn parse_expr_fragment(src: &str, interner: &mut Interner) -> Result<crate::ast::Expr, String> {
     let mut lex_stream = Vec::new();
     for (t, span) in lex::Token::lexer(src).spanned() {
+        match t {
+            lex::Token::Ident(name) if name.len() > MAX_IDENTIFIER_LENGTH => {
+                return Err(format!(
+                    "Parse error: identifier exceeds maximum length of {} characters",
+                    MAX_IDENTIFIER_LENGTH
+                ));
+            }
+            lex::Token::StrLit(val) if val.len() > MAX_STRING_LITERAL_LENGTH => {
+                return Err(format!(
+                    "Parse error: string literal exceeds maximum length of {} characters",
+                    MAX_STRING_LITERAL_LENGTH
+                ));
+            }
+            _ => {}
+        }
         lex_stream.push((span.start, t, span.end));
     }
     meerkat::ExprParser::new()
@@ -335,52 +335,40 @@ mod tests {
         }
     }
 
-    /// #39: verify the html-part splitter produces literal text and parsed
-    /// interpolation expressions in order.
+    /// #39: parse_template splits literal text and interpolations, exposing the
+    /// embedded expression through the template interface.
     #[test]
-    fn test_parse_html_parts_interpolation() {
-        use crate::ast::{Expr, HtmlPart};
+    fn test_parse_template_interpolation() {
+        use crate::ast::Expr;
         let mut interner = Interner::new();
-        let parts = parse_html_parts("The count is {count}.", &mut interner).expect("should parse");
-        assert_eq!(parts.len(), 3, "expected text, expr, text: {:?}", parts);
-        match &parts[0] {
-            HtmlPart::Text(t) => assert_eq!(t, "The count is "),
-            other => panic!("expected Text, got {:?}", other),
-        }
-        match &parts[1] {
-            HtmlPart::Expr(e) => assert!(
-                matches!(**e, Expr::Variable { .. }),
-                "expected Variable, got {:?}",
-                e
-            ),
-            other => panic!("expected Expr, got {:?}", other),
-        }
-        match &parts[2] {
-            HtmlPart::Text(t) => assert_eq!(t, "."),
-            other => panic!("expected Text, got {:?}", other),
-        }
+        let template =
+            parse_template("The count is {count}.", &mut interner).expect("should parse");
+        let exprs: Vec<&Expr> = template.embedded_exprs().collect();
+        assert_eq!(exprs.len(), 1, "expected one embedded expression");
+        assert!(
+            matches!(exprs[0], Expr::Variable { .. }),
+            "expected Variable, got {:?}",
+            exprs[0]
+        );
     }
 
-    /// #39: no interpolation yields a single text part.
+    /// #39: a template with no interpolation exposes no embedded expressions.
     #[test]
-    fn test_parse_html_parts_text_only() {
-        use crate::ast::HtmlPart;
+    fn test_parse_template_text_only() {
         let mut interner = Interner::new();
-        let parts = parse_html_parts("<p>hello</p>", &mut interner).expect("should parse");
-        assert_eq!(parts.len(), 1);
-        assert!(matches!(&parts[0], HtmlPart::Text(t) if t == "<p>hello</p>"));
+        let template = parse_template("<p>hello</p>", &mut interner).expect("should parse");
+        assert_eq!(template.embedded_exprs().count(), 0);
     }
 
     /// #39: an unterminated interpolation is an error, not a panic.
     #[test]
-    fn test_parse_html_parts_unterminated() {
+    fn test_parse_template_unterminated() {
         let mut interner = Interner::new();
-        let res = parse_html_parts("count is {count", &mut interner);
+        let res = parse_template("count is {count", &mut interner);
         assert!(res.is_err());
     }
 
     /// #39: the html literal lexes and parses through to an Expr::Html node.
-    /// (Stub stage: parts are empty; interpolation wiring is verified separately.)
     #[test]
     fn test_html_literal_parses() {
         use crate::ast::{Decl, Expr, Stmt};
@@ -393,7 +381,7 @@ mod tests {
             Stmt::Service { decls, .. } => match &decls[0] {
                 Decl::DefDecl { val, .. } => {
                     assert!(
-                        matches!(val, Expr::Html { .. }),
+                        matches!(val, Expr::Html(_)),
                         "expected Expr::Html, got {:?}",
                         val
                     );
@@ -404,30 +392,32 @@ mod tests {
         }
     }
 
-    /// #39: the full pipeline parses an html def with an interpolation into an
-    /// Expr::Html whose parts include a parsed embedded expression.
+    /// #39: the full pipeline parses an html def with an interpolation; the
+    /// template exposes the parsed embedded expression through its interface.
     #[test]
     fn test_html_literal_full_parse() {
-        use crate::ast::{Decl, Expr, HtmlPart, Stmt};
+        use crate::ast::{Decl, Expr, Stmt};
         let mut interner = Interner::new();
         let input = "service webClient { pub def html = (<p>The count is {count}.</p>); }";
         let res = parse_string(input, &mut interner);
         assert!(res.is_ok(), "parse failed: {:?}", res);
         let ast = res.unwrap();
-        let parts = match &ast[0] {
+        let template = match &ast[0] {
             Stmt::Service { decls, .. } => match &decls[0] {
                 Decl::DefDecl {
-                    val: Expr::Html { parts },
+                    val: Expr::Html(template),
                     ..
-                } => parts,
+                } => template,
                 other => panic!("expected DefDecl with Expr::Html, got {:?}", other),
             },
             other => panic!("expected Service, got {:?}", other),
         };
-        // <p>The count is , {count}, .</p>
-        assert_eq!(parts.len(), 3, "parts: {:?}", parts);
-        assert!(matches!(&parts[0], HtmlPart::Text(t) if t == "<p>The count is "));
-        assert!(matches!(&parts[1], HtmlPart::Expr(e) if matches!(**e, Expr::Variable { .. })));
-        assert!(matches!(&parts[2], HtmlPart::Text(t) if t == ".</p>"));
+        let exprs: Vec<&Expr> = template.embedded_exprs().collect();
+        assert_eq!(exprs.len(), 1, "expected one embedded expression");
+        assert!(
+            matches!(exprs[0], Expr::Variable { .. }),
+            "expected Variable, got {:?}",
+            exprs[0]
+        );
     }
 }

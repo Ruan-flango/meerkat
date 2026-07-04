@@ -39,9 +39,9 @@ impl Expr {
                 deps
             }
             Expr::Func { body, .. } => body.cross_service_deps(),
-            Expr::Html { parts } => {
+            Expr::Html(template) => {
                 let mut deps = HashSet::new();
-                for e in parts.iter().filter_map(crate::ast::HtmlPart::expr) {
+                for e in template.embedded_exprs() {
                     deps.extend(e.cross_service_deps());
                 }
                 deps
@@ -135,9 +135,9 @@ impl Expr {
                 new_binds.extend(params.iter().map(|p| p.name));
                 body.free_var(reactive_names, &new_binds)
             }
-            Expr::Html { parts } => {
+            Expr::Html(template) => {
                 let mut free_vars = HashSet::new();
-                for e in parts.iter().filter_map(crate::ast::HtmlPart::expr) {
+                for e in template.embedded_exprs() {
                     free_vars.extend(e.free_var(reactive_names, var_binded));
                 }
                 free_vars
@@ -208,7 +208,8 @@ impl Expr {
 
 #[cfg(test)]
 mod html_dep_tests {
-    use crate::ast::{Expr, HtmlPart};
+    use crate::ast::Expr;
+    use crate::runtime::html::HtmlTemplateBuilder;
     use crate::runtime::interner::Interner;
     use std::collections::HashSet;
 
@@ -219,13 +220,11 @@ mod html_dep_tests {
     fn test_html_free_var_tracks_interpolation() {
         let mut interner = Interner::new();
         let count = interner.insert("count");
-        let expr = Expr::Html {
-            parts: vec![
-                HtmlPart::Text("<p>".to_string()),
-                HtmlPart::Expr(Box::new(Expr::Variable { name: count })),
-                HtmlPart::Text("</p>".to_string()),
-            ],
-        };
+        let mut builder = HtmlTemplateBuilder::new();
+        builder.push_text("<p>");
+        builder.push_expr(Expr::Variable { name: count });
+        builder.push_text("</p>");
+        let expr = Expr::Html(builder.build());
         let free = expr.free_var(&HashSet::new(), &HashSet::new());
         assert!(
             free.contains(&count),
@@ -241,12 +240,12 @@ mod html_dep_tests {
         let mut interner = Interner::new();
         let svc = interner.insert("counter");
         let member = interner.insert("count");
-        let expr = Expr::Html {
-            parts: vec![HtmlPart::Expr(Box::new(Expr::MemberAccess {
-                service_name: svc,
-                member_name: member,
-            }))],
-        };
+        let mut builder = HtmlTemplateBuilder::new();
+        builder.push_expr(Expr::MemberAccess {
+            service_name: svc,
+            member_name: member,
+        });
+        let expr = Expr::Html(builder.build());
         let deps = expr.cross_service_deps();
         assert!(
             deps.contains(&(svc, member)),

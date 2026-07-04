@@ -72,29 +72,21 @@ pub async fn eval(
     match expr {
         Expr::Literal { val } => Ok(val.clone()),
 
-        Expr::Html { parts } => {
-            // #39: render the template to an html value. Literal text is copied
-            // verbatim; each embedded expression is evaluated and formatted in
-            // place. Because the embedded parts are ordinary expressions,
-            // dependency analysis has already tracked them, so the html def is
-            // recomputed by the propagation machinery when a dependency changes.
-            let mut rendered = String::new();
-            for part in parts {
-                match part {
-                    crate::ast::HtmlPart::Text(t) => rendered.push_str(t),
-                    crate::ast::HtmlPart::Expr(e) => {
-                        let val = eval(e, env, ctx).await?;
-                        // #39: interpolate using the value's plain display. For
-                        // string values this currently includes surrounding
-                        // quotes; refining string interpolation formatting is a
-                        // known follow-up (the counter example uses ints).
-                        rendered.push_str(&val.to_string());
-                    }
-                }
+        Expr::Html(template) => {
+            // #39: the evaluator owns evaluation (it has the async context) and
+            // the html module owns assembling the value, keeping the template
+            // and markup representation encapsulated. Evaluate each embedded
+            // expression in order, then hand the values to the template to
+            // render. Because the embedded expressions are ordinary Exprs,
+            // dependency analysis has tracked them, so the html def is
+            // recomputed by propagation when a dependency changes.
+            let mut values = Vec::new();
+            for e in template.embedded_exprs() {
+                values.push(eval(e, env, ctx).await?);
             }
-            Ok(Value::Html(crate::runtime::html::Html::from_rendered(
-                rendered,
-            )))
+            template.render(&values).map(Value::Html).ok_or_else(|| {
+                EvalError::RuntimeError("html render: value count mismatch".to_string())
+            })
         }
 
         Expr::Call { func, args } => {
@@ -504,12 +496,12 @@ mod tests {
     /// has the interpolation substituted from the environment.
     #[tokio::test]
     async fn test_html_renders_with_interpolation() {
-        use crate::runtime::parser::parse_html_parts;
+        use crate::runtime::parser::parse_template;
         let mut manager = Manager::new(Interner::new());
         let count = manager.interner.insert("count");
-        let parts = parse_html_parts("The count is {count}.", &mut manager.interner)
-            .expect("parse html parts");
-        let expr = Expr::Html { parts };
+        let template = parse_template("The count is {count}.", &mut manager.interner)
+            .expect("parse html template");
+        let expr = Expr::Html(template);
         let env = vec![(count, Value::Int { val: 2 })];
         let mut ctx = EvalContext {
             manager: &mut manager,

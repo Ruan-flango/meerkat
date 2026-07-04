@@ -228,16 +228,10 @@ impl<'a> AstPrinter<'a> {
                 let name = *name;
                 println!("Variable: {{ name: {} }}", self.format_symbol(name));
             }
-            Expr::Html { parts } => {
-                println!("Html: {{ parts: {} }}", parts.len());
-                for part in parts {
-                    match part {
-                        crate::ast::HtmlPart::Text(t) => {
-                            self.print_indent(indent + 1);
-                            println!("Text: {:?}", t);
-                        }
-                        crate::ast::HtmlPart::Expr(e) => self.print_expr(e, indent + 1),
-                    }
+            Expr::Html(template) => {
+                println!("Html:");
+                for e in template.embedded_exprs() {
+                    self.print_expr(e, indent + 1);
                 }
             }
             Expr::Tuple { val } => {
