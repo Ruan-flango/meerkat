@@ -1,0 +1,6 @@
+import s1
+
+service s2 {
+    pub def z = s1.y * 2;
+    pub def html = (<p>z = {z}</p>);
+}

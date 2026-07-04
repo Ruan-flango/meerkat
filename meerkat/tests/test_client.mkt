@@ -8,8 +8,8 @@ service s2 {
 
 
 @test(s2) {
-    assert(w == -1);
+    let cur_y = s1.y;
     do inc_delegate(1);
-    assert(z==4);
+    assert (z == cur_y * 2 + 2);
+    assert (w == cur_y - 2);
 }
-
