@@ -43,6 +43,12 @@ cargo run -- -f meerkat/tests/test_client.mkt -i "<Service URL>"
 
 # Run an integration test with a distributed server and client
 python3 scripts/mkn.py scripts/manifest_dist_commit.json
+
+# Watch def updates in real time
+cargo run -- -s -f meerkat/tests/s1.mkt                                  # (in terminal 1): sets up a server, prints a Service URL
+cargo run -- -f meerkat/tests/test_client.mkt --watch -i <Service URL>   # (in terminal 2): watches updates to local defs
+cargo run -- -f meerkat/tests/test_client.mkt -i <Service URL>           # (in terminal 3): modifies a var on s1, triggers an update to the test_client in terminal 2
+
 ```
 
 ## License
