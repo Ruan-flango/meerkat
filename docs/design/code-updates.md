@@ -62,7 +62,8 @@ changed, migration code must be written (as shown in Domingues and Seco) in
 order to populate the value of the new variable/table to conform to the
 new type.  Typically this migration code reads from the old variable/table
 and writes to the new one, but it can read from other sources as well if
-need be.  The migration code is executed synchronously with the code update,
+need be.  The migration code is executed as part of the code update
+transaction, while code update locks are held,
 and once the code update is done, the migration code is no longer needed
 as all the data has been migrated.  It can be kept around for replay
 purposes, if desired.
@@ -85,6 +86,7 @@ Meerkat node and is exposed through that URL.
 Eventually, code updates will likely be limited to code that is defined in the
 current Meerkat distributed virtual machine (DVM), for security reasons.
 Meerkat DVMs may of course choose to extend some level of trust to each other.
+We defer the design of this authorization boundary to when we design the DVM.
 
 When an update is executed, we need to acquire a write-lock on any service
 being deleted and on any members being deleted or modified.  That write-lock
@@ -95,7 +97,9 @@ canceled, and error messages are reported to the developer.
 
 ## Errors due to code update races
 
-A code update will always preserve the code in a working state.  However, there
+A code update is transactional; if it succeeds, it will always preserve
+the code in a working state, and if it fails, all changes are rolled back.
+However, there
 could be races between executing some action and code updates.  Whichever
 acquires the appropriate locks will run.  If the code update runs first, some
 triggered actions could be invalidated.  We need to design a mechanism to report
