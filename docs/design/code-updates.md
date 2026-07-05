@@ -3,8 +3,11 @@
 ## Syntax
 
 The syntax for code updates should distinguish updating existing definitions
-from introducing new definitions.  One possibility would look like this
-(example borrowed from the Requirements wiki page):
+from introducing new definitions.  This expresses the intent to update and
+ensures that the developer does not update a definition by accident when they
+think they are adding a new definition.  The `update` keyword indicates
+services and members that are updated.  One possible syntax would look like
+this (example borrowed from the Requirements wiki page):
 
 ```meerkat
 update s1 {
@@ -29,19 +32,40 @@ service class MyServiceClass {
 service myService = MyServiceClass;
 ```meerkat
 
+When a service class is updated, then all the services that are an instance
+of that service class are updated.
+
+The existing `service` declaration can be thought of as declaring a service
+class and instantiating it to a `service` that has the same name.  In
+contrast, a `service class` is not instantiated until it is done explicitly
+with a separate `service` declaration like the one described above.
+
 ## Typechecking
 
 A starting point for type checking code updates is found in
 [Domingues and Seco 2015](https://docentes.fct.unl.pt/jrcs/files/rebls15.pdf).
 The type checker knows about all the dependencies of a service, so if a
-code update changes the interface of a service, the type checker will verify
+code update changes the interface of a service in a non-monotonic way (e.g.
+by removing a member, or by changing to an incompatible type, such as from
+`int` to `string`), the type checker will verify
 that client code is not broken (and/or an update to the client code is
 packaged with the service code update).
 
 It should be possible to type check a code update against code in one or more
 `.mkt` files, or against one or more running services.  In the latter case,
 the code update is guaranteed to succeed unless the code is changed by some
-other update in between.
+other update in between.  This is a version of the usual type
+soundness property, extended to cover code updates.
+
+Note that to make this work in practice, when a variable or table's type is
+changed, migration code must be written (as shown in Domingues and Seco) in
+order to populate the value of the new variable/table to conform to the
+new type.  Typically this migration code reads from the old variable/table
+and writes to the new one, but it can read from other sources as well if
+need be.  The migration code is executed synchronously with the code update,
+and once the code update is done, the migration code is no longer needed
+as all the data has been migrated.  It can be kept around for replay
+purposes, if desired.
 
 ## Coordination
 
@@ -54,6 +78,13 @@ on those imported services.
 
 When Meerkat supports an import statement in the REPL accepting a URL
 (Issue #95), then we can easily import any service we want to update.
+For now, import by URL means importing a service that is running on some other
+Meerkat node and is exposed through that URL.
+
+
+Eventually, code updates will likely be limited to code that is defined in the
+current Meerkat distributed virtual machine (DVM), for security reasons.
+Meerkat DVMs may of course choose to extend some level of trust to each other.
 
 When an update is executed, we need to acquire a write-lock on any service
 being deleted and on any members being deleted or modified.  That write-lock
