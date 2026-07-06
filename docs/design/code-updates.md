@@ -13,7 +13,7 @@ this (example borrowed from the Requirements wiki page):
 update s1 {
   update def y = x + 5;
 }
-```meerkat
+```
 
 ## Service classes
 
@@ -30,7 +30,7 @@ service class MyServiceClass {
 }
 
 service myService = MyServiceClass;
-```meerkat
+```
 
 When a service class is updated, then all the services that are an instance
 of that service class are updated.
