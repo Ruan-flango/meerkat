@@ -212,8 +212,8 @@ fn free_vars_in_action_stmt(
         ActionStmt::Let { expr, .. } => expr.free_var(reactive_names, var_binded),
         ActionStmt::Expr(expr) => expr.free_var(reactive_names, var_binded),
         ActionStmt::Insert { row, .. } => row.free_var(reactive_names, var_binded),
-        ActionStmt::For { var, range, body } => {
-            let mut free_vars = range.free_var(reactive_names, var_binded);
+        ActionStmt::For { var, iterable, body } => {
+            let mut free_vars = iterable.free_var(reactive_names, var_binded);
             let mut body_binds = var_binded.clone();
             body_binds.insert(*var);
             for s in body {
@@ -232,8 +232,8 @@ fn cross_service_deps_in_action_stmt(stmt: &ActionStmt) -> HashSet<(Symbol, Symb
         ActionStmt::Assert(expr, _) => expr.cross_service_deps(),
         ActionStmt::Assign { expr, .. } => expr.cross_service_deps(),
         ActionStmt::Insert { row, .. } => row.cross_service_deps(),
-        ActionStmt::For { range, body, .. } => {
-            let mut deps = range.cross_service_deps();
+        ActionStmt::For { iterable, body, .. } => {
+            let mut deps = iterable.cross_service_deps();
             for s in body {
                 deps.extend(cross_service_deps_in_action_stmt(s));
             }

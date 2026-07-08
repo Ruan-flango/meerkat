@@ -57,7 +57,7 @@ pub enum NetActionStmt {
     },
     For {
         var: String,
-        range: NetExpr,
+        iterable: NetExpr,
         body: Vec<NetActionStmt>,
     },
 }

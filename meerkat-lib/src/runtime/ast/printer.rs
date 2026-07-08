@@ -213,10 +213,10 @@ impl<'a> AstPrinter<'a> {
                 );
                 self.print_expr(row, indent + 1);
             }
-            ActionStmt::For { var, range, body } => {
+            ActionStmt::For { var, iterable, body } => {
                 let var = *var;
                 println!("For: {{ var: {} }}", self.format_symbol(var));
-                self.print_expr(range, indent + 1);
+                self.print_expr(iterable, indent + 1);
                 for stmt in body {
                     self.print_action_stmt(stmt, indent + 1);
                 }

@@ -52,7 +52,7 @@ pub enum ActionStmt {
     },
     For {
         var: Symbol,
-        range: Expr,
+        iterable: Expr,
         body: Vec<ActionStmt>,
     },
 }
@@ -484,8 +484,8 @@ impl Display for ActionStmt {
             ActionStmt::Insert { row, table_name } => {
                 write!(f, "insert into {} {}", table_name, row)
             }
-            ActionStmt::For { var, range, body } => {
-                write!(f, "for {} in {} {{ ", var, range)?;
+            ActionStmt::For { var, iterable, body } => {
+                write!(f, "for {} in {} {{ ", var, iterable)?;
                 for stmt in body {
                     write!(f, "{}; ", stmt)?;
                 }

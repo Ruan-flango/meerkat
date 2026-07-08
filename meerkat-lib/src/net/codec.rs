@@ -787,17 +787,17 @@ pub fn encode_action_stmt(stmt: &ActionStmt, interner: &Interner) -> Result<NetA
                 table_name: table_str.to_string(),
             })
         }
-        ActionStmt::For { var, range, body } => {
+        ActionStmt::For { var, iterable, body } => {
             let var_str = interner.get(*var).to_string();
             validate_identifier(&var_str)?;
-            let encoded_range = encode_expr(range, interner)?;
+            let encoded_iterable = encode_expr(iterable, interner)?;
             let mut encoded_body = Vec::new();
             for s in body {
                 encoded_body.push(encode_action_stmt(s, interner)?);
             }
             Ok(NetActionStmt::For {
                 var: var_str,
-                range: encoded_range,
+                iterable: encoded_iterable,
                 body: encoded_body,
             })
         }
@@ -843,16 +843,20 @@ pub fn decode_action_stmt(stmt: NetActionStmt, interner: &mut Interner) -> Resul
                 table_name: interner.insert(&table_name),
             })
         }
-        NetActionStmt::For { var, range, body } => {
+        NetActionStmt::For {
+            var,
+            iterable,
+            body,
+        } => {
             validate_identifier(&var)?;
-            let decoded_range = decode_expr(range, interner)?;
+            let decoded_iterable = decode_expr(iterable, interner)?;
             let mut decoded_body = Vec::new();
             for s in body {
                 decoded_body.push(decode_action_stmt(s, interner)?);
             }
             Ok(ActionStmt::For {
                 var: interner.insert(&var),
-                range: decoded_range,
+                iterable: decoded_iterable,
                 body: decoded_body,
             })
         }

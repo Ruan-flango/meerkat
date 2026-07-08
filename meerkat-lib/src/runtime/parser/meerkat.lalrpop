@@ -127,7 +127,7 @@ ActionStmt: ActionStmt = {
     },
     <i:Ident> "=" <e:Expr> ";" => ActionStmt::Assign { name: i, expr: e },
     "for" <i:Ident> "in" <e:Expr> "{" <stmts: ActionStmts> "}" => {
-        ActionStmt::For { var: i, range: e, body: stmts }
+        ActionStmt::For { var: i, iterable: e, body: stmts }
     },
     <e:Expr> ";" => ActionStmt::Expr(e),
 }
