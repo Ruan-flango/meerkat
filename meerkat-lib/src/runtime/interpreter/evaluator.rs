@@ -144,7 +144,9 @@ pub async fn eval(
                         return Ok(Value::Bool { val: v1 == v2 });
                     }
                     (Value::Range { start: s1, end: e1 }, Value::Range { start: s2, end: e2 }) => {
-                        return Ok(Value::Bool { val: s1 == s2 && e1 == e2 });
+                        return Ok(Value::Bool {
+                            val: s1 == s2 && e1 == e2,
+                        });
                     }
                     _ => {
                         if let (Some(l1), Some(l2)) =
