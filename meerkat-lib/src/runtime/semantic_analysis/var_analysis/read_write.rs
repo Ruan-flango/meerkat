@@ -156,8 +156,12 @@ impl Expr {
             }
             Expr::Action(stmts) => {
                 let mut free_vars = HashSet::new();
+                let mut action_binds = var_binded.clone();
                 for stmt in stmts {
-                    free_vars.extend(free_vars_in_action_stmt(stmt, reactive_names, var_binded));
+                    let (stmt_free_vars, new_binds) =
+                        free_vars_in_action_stmt(stmt, reactive_names, &action_binds);
+                    free_vars.extend(stmt_free_vars);
+                    action_binds = new_binds;
                 }
                 free_vars.difference(reactive_names).cloned().collect()
             }
@@ -204,8 +208,8 @@ fn free_vars_in_action_stmt(
     stmt: &ActionStmt,
     reactive_names: &HashSet<Symbol>,
     var_binded: &HashSet<Symbol>,
-) -> HashSet<Symbol> {
-    match stmt {
+) -> (HashSet<Symbol>, HashSet<Symbol>) {
+    let free_vars = match stmt {
         ActionStmt::Assign { expr, .. } => expr.free_var(reactive_names, var_binded),
         ActionStmt::Do(expr) => expr.free_var(reactive_names, var_binded),
         ActionStmt::Assert(expr, _) => expr.free_var(reactive_names, var_binded),
@@ -221,11 +225,21 @@ fn free_vars_in_action_stmt(
             let mut body_binds = var_binded.clone();
             body_binds.insert(*var);
             for s in body {
-                free_vars.extend(free_vars_in_action_stmt(s, reactive_names, &body_binds));
+                let (stmt_free_vars, new_binds) =
+                    free_vars_in_action_stmt(s, reactive_names, &body_binds);
+                free_vars.extend(stmt_free_vars);
+                body_binds = new_binds;
             }
             free_vars
         }
+    };
+
+    let mut new_binds = var_binded.clone();
+    if let ActionStmt::Let { name, .. } = stmt {
+        new_binds.insert(*name);
     }
+
+    (free_vars, new_binds)
 }
 
 fn cross_service_deps_in_action_stmt(stmt: &ActionStmt) -> HashSet<(Symbol, Symbol)> {
