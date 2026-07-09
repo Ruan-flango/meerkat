@@ -100,7 +100,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             // must occur after this AND in the `check_only`
             // branch below; both must be simultaneously
             // maintained
-            node.check()
+            node.check(&prog)
                 .map_err(|e| format!("Static check error: {}", e))?;
 
             // This mode must appear before `server` args check in
