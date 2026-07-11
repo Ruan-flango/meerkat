@@ -8,6 +8,7 @@ use crate::runtime::interner::Symbol;
 use crate::runtime::limits::MAX_SCOPE_DEPTH;
 use crate::runtime::tt::Param;
 use crate::runtime::Env;
+use std::collections::HashMap;
 use std::fmt;
 
 /// Errors that can occur during name resolution
@@ -20,6 +21,8 @@ pub enum Error {
     },
     /// The AST nesting depth exceeded the limit
     DepthLimit,
+    /// Testing an imported service is not yet supported
+    ImportResolutionUnimplemented,
 }
 
 impl fmt::Display for Error {
@@ -31,6 +34,13 @@ impl fmt::Display for Error {
             Error::DepthLimit => {
                 write!(f, "Depth limit exceeded")
             }
+            Error::ImportResolutionUnimplemented => {
+                write!(
+                    f,
+                    "Name resolution for imported services \
+                     is not yet implemented"
+                )
+            }
         }
     }
 }
@@ -41,6 +51,7 @@ impl std::error::Error for Error {}
 #[derive(Default)]
 pub struct Resolver {
     depth: usize,
+    service_members: HashMap<Symbol, Vec<Symbol>>,
 }
 
 impl Resolver {
@@ -49,7 +60,10 @@ impl Resolver {
     /// Returns:
     ///     `Self`: The new `Resolver` instance
     pub fn new() -> Self {
-        Self { depth: 0 }
+        Self {
+            depth: 0,
+            service_members: HashMap::new(),
+        }
     }
 
     /// Resolves name bindings for a program represented as a slice
@@ -62,6 +76,43 @@ impl Resolver {
     /// Returns:
     ///     `Result<(), Error>`: Ok if resolution succeeds, or `Error`
     pub fn resolve_program(&mut self, stmts: &[Stmt], env: &mut Env<'_, ()>) -> Result<(), Error> {
+        // Pass 1: Hoist top-level services and imports, and extract
+        // service members. This pre-pass is required to support
+        // mutually-referential services defined in arbitrary order.
+        // By registering all service names and extracting their
+        // fields into `service_members` before resolving
+        // expressions in the second pass, services can refer to
+        // each other out-of-order, and `@test` blocks can resolve
+        // variables of their target services even if the test is
+        // defined before the service
+        for stmt in stmts {
+            match stmt {
+                Stmt::Service { name, decls } => {
+                    env.bind(*name, ());
+                    let mut members = Vec::new();
+                    for decl in decls {
+                        match decl {
+                            Decl::VarDecl { name: mem, .. }
+                            | Decl::DefDecl { name: mem, .. }
+                            | Decl::TableDecl { name: mem, .. } => {
+                                members.push(*mem);
+                            }
+                        }
+                    }
+                    self.service_members.insert(*name, members);
+                }
+                Stmt::Import { service_name, .. } => {
+                    env.bind(*service_name, ());
+                }
+                Stmt::ActionStmt(_)
+                | Stmt::Update { .. }
+                | Stmt::Connect { .. }
+                | Stmt::Test { .. }
+                | Stmt::Watch { .. } => {}
+            }
+        }
+
+        // Pass 2: Resolve all statements
         for stmt in stmts {
             self.resolve_stmt(stmt, env)?;
         }
@@ -117,6 +168,16 @@ impl Resolver {
                     });
                 }
                 let mut test_env = Env::new(Some(env));
+                match self.service_members.get(service_name) {
+                    Some(members) => {
+                        for member in members {
+                            test_env.bind(*member, ());
+                        }
+                    }
+                    None => {
+                        return Err(Error::ImportResolutionUnimplemented);
+                    }
+                }
                 self.resolve_action_stmts(stmts, &mut test_env)
             }
             Stmt::Watch { expr } => self.resolve_expr(expr, env),
@@ -783,5 +844,132 @@ mod tests {
 
         // Ensure that the depth was unwound and returned to 0
         assert_eq!(resolver.depth, 0);
+    }
+
+    /// Verify that `@test` blocks can resolve variables
+    /// in the target service
+    #[test]
+    fn test_unit_test_block_member_resolution() {
+        let mut interner = Interner::new();
+        let s = interner.insert("s");
+        let x = interner.insert("x");
+
+        // Representing `service s { var x = 5; }`
+        let s_stmt = Stmt::Service {
+            name: s,
+            decls: vec![Decl::VarDecl {
+                name: x,
+                ty: None,
+                val: Expr::Literal {
+                    val: Value::Int { val: 5 },
+                },
+            }],
+        };
+
+        // Representing `@test(s) { x; }`
+        let test_stmt = Stmt::Test {
+            service_name: s,
+            stmts: vec![ActionStmt::Expr(Expr::Variable { name: x })],
+        };
+
+        let mut env = Env::new(None);
+        let mut resolver = Resolver::new();
+        let program = vec![s_stmt, test_stmt];
+
+        assert!(resolver.resolve_program(&program, &mut env).is_ok());
+    }
+
+    /// Verify `@test` blocks can resolve services that
+    /// are defined after them in the program statements
+    #[test]
+    fn test_unit_test_block_hoisting() {
+        let mut interner = Interner::new();
+        let s = interner.insert("s");
+        let x = interner.insert("x");
+
+        // Representing `@test(s) { x; }`
+        let test_stmt = Stmt::Test {
+            service_name: s,
+            stmts: vec![ActionStmt::Expr(Expr::Variable { name: x })],
+        };
+
+        // Representing `service s { var x = 5; }`
+        let s_stmt = Stmt::Service {
+            name: s,
+            decls: vec![Decl::VarDecl {
+                name: x,
+                ty: None,
+                val: Expr::Literal {
+                    val: Value::Int { val: 5 },
+                },
+            }],
+        };
+
+        let mut env = Env::new(None);
+        let mut resolver = Resolver::new();
+        let program = vec![test_stmt, s_stmt];
+
+        assert!(resolver.resolve_program(&program, &mut env).is_ok());
+    }
+
+    /// Verify testing an imported service yields an
+    /// `ImportResolutionUnimplemented` error
+    #[test]
+    fn test_unit_test_block_imported_unsupported() {
+        let mut interner = Interner::new();
+        let s = interner.insert("s");
+        let x = interner.insert("x");
+
+        // Representing `@test(s) { x; }`
+        let test_stmt = Stmt::Test {
+            service_name: s,
+            stmts: vec![ActionStmt::Expr(Expr::Variable { name: x })],
+        };
+
+        let mut env = Env::new(None);
+        // Bind service in `env` (simulating import)
+        env.bind(s, ());
+
+        let mut resolver = Resolver::new();
+        let program = vec![test_stmt];
+
+        let result = resolver.resolve_program(&program, &mut env);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ImportResolutionUnimplemented => {}
+            Error::UnboundVariable { .. } | Error::DepthLimit => {
+                panic!("Expected ImportResolutionUnimplemented error");
+            }
+        }
+    }
+
+    /// Verify testing an undefined service yields an
+    /// `UnboundVariable` error
+    #[test]
+    fn test_unit_test_block_undefined_service() {
+        let mut interner = Interner::new();
+        let s = interner.insert("s");
+        let x = interner.insert("x");
+
+        // Representing `@test(s) { x; }`
+        let test_stmt = Stmt::Test {
+            service_name: s,
+            stmts: vec![ActionStmt::Expr(Expr::Variable { name: x })],
+        };
+
+        let mut env = Env::new(None);
+        let mut resolver = Resolver::new();
+        let program = vec![test_stmt];
+
+        let result = resolver.resolve_program(&program, &mut env);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::UnboundVariable { name } => {
+                assert_eq!(name, s);
+            }
+            Error::ImportResolutionUnimplemented | Error::DepthLimit => {
+                panic!("Expected UnboundVariable error");
+            }
+        }
     }
 }

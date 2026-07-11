@@ -704,3 +704,120 @@ fn test_integration_update_stmt_scoping() {
     let res = resolve(&stmts);
     assert_eq!(res, Err(Error::UnboundVariable { name: y }));
 }
+
+/// Verify that `@test` blocks can resolve variables
+/// inside the target service
+#[test]
+fn test_integration_test_block_member_resolution() {
+    let mut interner = Interner::new();
+    let input = "
+        service s1 {
+            var x = 5;
+            pub def get_x = x;
+        }
+        @test(s1) {
+            do get_x;
+            assert(x == 5);
+        }
+    ";
+    let parse_result = parse_string(input, &mut interner);
+    assert!(parse_result.is_ok());
+    let stmts = parse_result.unwrap();
+    let res = resolve(&stmts);
+    assert!(res.is_ok());
+}
+
+/// Verify `@test` blocks can resolve services that
+/// are defined after them in the program statements
+#[test]
+fn test_integration_test_block_hoisting() {
+    let mut interner = Interner::new();
+    let input = "
+        @test(s1) {
+            do get_x;
+            assert(x == 5);
+        }
+        service s1 {
+            var x = 5;
+            pub def get_x = x;
+        }
+    ";
+    let parse_result = parse_string(input, &mut interner);
+    assert!(parse_result.is_ok());
+    let stmts = parse_result.unwrap();
+    let res = resolve(&stmts);
+    assert!(res.is_ok());
+}
+
+/// Verify testing an imported service yields an
+/// `ImportResolutionUnimplemented` error
+/// TODO: Remove this test when name resolution and type
+/// checking are implemented for imports
+#[test]
+fn test_integration_test_block_imported_unsupported() {
+    let mut interner = Interner::new();
+    let input = "
+        import s1
+        @test(s1) {
+            assert(x == 5);
+        }
+    ";
+    let parse_result = parse_string(input, &mut interner);
+    assert!(parse_result.is_ok());
+    let stmts = parse_result.unwrap();
+    let res = resolve(&stmts);
+    assert!(res.is_err());
+    match res.unwrap_err() {
+        Error::ImportResolutionUnimplemented => {}
+        Error::UnboundVariable { .. } | Error::DepthLimit => {
+            panic!("Expected ImportResolutionUnimplemented error");
+        }
+    }
+}
+
+/// Verify complex out-of-order mutually referential service
+/// definitions and out-of-order test blocks resolving symbols
+/// across 4 services
+#[test]
+fn test_integration_complex_arbitrary_order_resolution() {
+    let mut interner = Interner::new();
+    let input = "
+        @test(s3) {
+            assert(a == 1);
+            do s4.action4;
+        }
+        service s1 {
+            pub def val1 = s2.val2;
+            pub def action1 = action {
+                do s2.action2;
+            };
+        }
+        @test(s1) {
+            do action1;
+        }
+        service s3 {
+            pub def val3 = s4.val4;
+            var a = 1;
+        }
+        service s2 {
+            pub def val2 = s3.val3;
+            pub def action2 = action {
+                do s3.val3;
+            };
+        }
+        service s4 {
+            pub def val4 = s1.val1;
+            pub def action4 = action {
+                do s1.action1;
+            };
+        }
+        @test(s4) {
+            do action4;
+        }
+    ";
+    let parse_result = parse_string(input, &mut interner);
+    assert!(parse_result.is_ok());
+    let stmts = parse_result.unwrap();
+    let res = resolve(&stmts);
+    assert!(res.is_ok());
+}
