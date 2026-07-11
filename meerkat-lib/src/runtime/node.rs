@@ -48,7 +48,30 @@ impl<'a> Node<'a> {
     /// Returns:
     ///     `Result<()>`: Ok if checks pass, or an error
     pub fn check(&self, program: &[Stmt]) -> Result<()> {
-        nameres::resolve(program).map_err(|e| Error::Message(e.to_string()))
+        nameres::resolve(program).map_err(|e| match e {
+            nameres::Error::UnknownIdentifier {
+                name,
+                expected,
+                context_name,
+            } => {
+                let name_str = self.interner.get(name);
+                let msg = match context_name {
+                    Some(ctx) => {
+                        let ctx_str = self.interner.get(ctx);
+                        format!(
+                            "Unknown identifier '{}' (expected {}) \
+                             in service '{}'",
+                            name_str, expected, ctx_str
+                        )
+                    }
+                    None => {
+                        format!("Unknown identifier '{}' (expected {})", name_str, expected)
+                    }
+                };
+                Error::Message(msg)
+            }
+            other => Error::Message(other.to_string()),
+        })
     }
 
     /// Start the runtime manager consuming this Node

@@ -5,7 +5,7 @@
 
 use meerkat_lib::runtime::{
     ast::{ActionStmt, Decl, Expr, Stmt, Value},
-    nameres::{resolve, Error},
+    nameres::{resolve, Error, ExpectedSort},
     parser::parse_string,
     tt::Param,
     Interner,
@@ -170,7 +170,14 @@ fn test_integration_watch_unbound() {
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
     let z = interner.insert("z");
-    assert_eq!(res, Err(Error::UnboundVariable { name: z }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: z,
+            expected: ExpectedSort::Variable,
+            context_name: None,
+        })
+    );
 }
 
 /// Verify that update statements resolve existing service names
@@ -222,7 +229,14 @@ fn test_integration_update_unbound() {
 
     let stmts = vec![update_stmt];
     let res = resolve(&stmts);
-    assert_eq!(res, Err(Error::UnboundVariable { name: s2 }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: s2,
+            expected: ExpectedSort::Service,
+            context_name: None,
+        })
+    );
 }
 
 /// Verify that select expressions validate their table name
@@ -347,8 +361,16 @@ fn test_integration_insert_unbound() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
+    let s1 = interner.insert("s1");
     let t2 = interner.insert("t2");
-    assert_eq!(res, Err(Error::UnboundVariable { name: t2 }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: t2,
+            expected: ExpectedSort::Table,
+            context_name: Some(s1),
+        })
+    );
 }
 
 /// Verify that insert statement row variables are resolved
@@ -407,8 +429,16 @@ fn test_integration_assign_unbound() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
+    let s1 = interner.insert("s1");
     let z = interner.insert("z");
-    assert_eq!(res, Err(Error::UnboundVariable { name: z }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: z,
+            expected: ExpectedSort::Variable,
+            context_name: Some(s1),
+        })
+    );
 }
 
 /// Verify that if expression condition is resolved
@@ -441,8 +471,16 @@ fn test_integration_if_expr_unbound() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
+    let s1 = interner.insert("s1");
     let unbound_val = interner.insert("unbound_val");
-    assert_eq!(res, Err(Error::UnboundVariable { name: unbound_val }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: unbound_val,
+            expected: ExpectedSort::Variable,
+            context_name: Some(s1),
+        })
+    );
 }
 
 /// Verify that unop resolves bound variable
@@ -529,8 +567,16 @@ fn test_integration_call_expr_unbound_arg() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
+    let s1 = interner.insert("s1");
     let z = interner.insert("z");
-    assert_eq!(res, Err(Error::UnboundVariable { name: z }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: z,
+            expected: ExpectedSort::Variable,
+            context_name: Some(s1),
+        })
+    );
 }
 
 /// Verify that call expression with unbound function triggers error
@@ -546,8 +592,16 @@ fn test_integration_call_expr_unbound_func() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
+    let s1 = interner.insert("s1");
     let z = interner.insert("z");
-    assert_eq!(res, Err(Error::UnboundVariable { name: z }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: z,
+            expected: ExpectedSort::Variable,
+            context_name: Some(s1),
+        })
+    );
 }
 
 /// Verify that closure value literals resolve parameters
@@ -595,8 +649,16 @@ fn test_integration_member_access_unbound() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
+    let s1 = interner.insert("s1");
     let s2 = interner.insert("s2");
-    assert_eq!(res, Err(Error::UnboundVariable { name: s2 }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: s2,
+            expected: ExpectedSort::Service,
+            context_name: Some(s1),
+        })
+    );
 }
 
 /// Verify that multiple services resolve correctly
@@ -634,8 +696,16 @@ fn test_integration_nested_blocks_let_isolation() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
+    let s1 = interner.insert("s1");
     let x = interner.insert("x");
-    assert_eq!(res, Err(Error::UnboundVariable { name: x }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: x,
+            expected: ExpectedSort::Variable,
+            context_name: Some(s1),
+        })
+    );
 }
 
 /// Verify that service update block hoists its declarations
@@ -702,7 +772,14 @@ fn test_integration_update_stmt_scoping() {
 
     let stmts = vec![s1_stmt, update_stmt, watch_stmt];
     let res = resolve(&stmts);
-    assert_eq!(res, Err(Error::UnboundVariable { name: y }));
+    assert_eq!(
+        res,
+        Err(Error::UnknownIdentifier {
+            name: y,
+            expected: ExpectedSort::Variable,
+            context_name: None,
+        })
+    );
 }
 
 /// Verify that `@test` blocks can resolve variables
@@ -769,7 +846,7 @@ fn test_integration_test_block_imported_unsupported() {
     assert!(res.is_err());
     match res.unwrap_err() {
         Error::ImportResolutionUnimplemented => {}
-        Error::UnboundVariable { .. } | Error::DepthLimit => {
+        Error::UnknownIdentifier { .. } | Error::DepthLimit => {
             panic!("Expected ImportResolutionUnimplemented error");
         }
     }

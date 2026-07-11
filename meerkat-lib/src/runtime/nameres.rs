@@ -11,13 +11,35 @@ use crate::runtime::Env;
 use std::collections::HashMap;
 use std::fmt;
 
+/// The sort of identifier expected during name resolution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedSort {
+    Service,
+    Table,
+    Variable,
+}
+
+impl fmt::Display for ExpectedSort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExpectedSort::Service => write!(f, "service"),
+            ExpectedSort::Table => write!(f, "table"),
+            ExpectedSort::Variable => write!(f, "variable"),
+        }
+    }
+}
+
 /// Errors that can occur during name resolution
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    /// A variable was referenced but not declared in scope
-    UnboundVariable {
-        /// The unbound symbol
+    /// An identifier was referenced but not declared in scope
+    UnknownIdentifier {
+        /// The unknown identifier symbol
         name: Symbol,
+        /// The expected sort of the identifier
+        expected: ExpectedSort,
+        /// The name of the surrounding context (e.g. service name), if any
+        context_name: Option<Symbol>,
     },
     /// The AST nesting depth exceeded the limit
     DepthLimit,
@@ -28,8 +50,20 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::UnboundVariable { name } => {
-                write!(f, "Unbound variable: {}", name)
+            Error::UnknownIdentifier {
+                name,
+                expected,
+                context_name,
+            } => {
+                if let Some(ctx) = context_name {
+                    write!(
+                        f,
+                        "Unknown identifier '{}' (expected {}) in context '{}'",
+                        name, expected, ctx
+                    )
+                } else {
+                    write!(f, "Unknown identifier '{}' (expected {})", name, expected)
+                }
             }
             Error::DepthLimit => {
                 write!(f, "Depth limit exceeded")
@@ -52,6 +86,7 @@ impl std::error::Error for Error {}
 pub struct Resolver {
     depth: usize,
     service_members: HashMap<Symbol, Vec<Symbol>>,
+    current_context: Option<Symbol>,
 }
 
 impl Resolver {
@@ -63,6 +98,7 @@ impl Resolver {
         Self {
             depth: 0,
             service_members: HashMap::new(),
+            current_context: None,
         }
     }
 
@@ -135,15 +171,21 @@ impl Resolver {
                 decls,
             } => {
                 if env.find(*service_name).is_none() {
-                    return Err(Error::UnboundVariable {
+                    return Err(Error::UnknownIdentifier {
                         name: *service_name,
+                        expected: ExpectedSort::Service,
+                        context_name: self.current_context,
                     });
                 }
+                let prev_context = self.current_context;
+                self.current_context = Some(*service_name);
                 // A child environment is required by the contract of
                 // `resolve_service` for proper hoisting and binding
                 // semantics without leaking names to the outer scope
                 let mut update_env = Env::new(Some(env));
-                self.resolve_service(decls, &mut update_env)
+                let res = self.resolve_service(decls, &mut update_env);
+                self.current_context = prev_context;
+                res
             }
             Stmt::Connect { path: _, addr: _ } => Ok(()),
             Stmt::Import {
@@ -156,17 +198,25 @@ impl Resolver {
             Stmt::Service { name, decls } => {
                 env.bind(*name, ());
                 let mut service_env = Env::new(Some(env));
-                self.resolve_service(decls, &mut service_env)
+                let prev_context = self.current_context;
+                self.current_context = Some(*name);
+                let res = self.resolve_service(decls, &mut service_env);
+                self.current_context = prev_context;
+                res
             }
             Stmt::Test {
                 service_name,
                 stmts,
             } => {
                 if env.find(*service_name).is_none() {
-                    return Err(Error::UnboundVariable {
+                    return Err(Error::UnknownIdentifier {
                         name: *service_name,
+                        expected: ExpectedSort::Service,
+                        context_name: self.current_context,
                     });
                 }
+                let prev_context = self.current_context;
+                self.current_context = Some(*service_name);
                 let mut test_env = Env::new(Some(env));
                 match self.service_members.get(service_name) {
                     Some(members) => {
@@ -175,10 +225,13 @@ impl Resolver {
                         }
                     }
                     None => {
+                        self.current_context = prev_context;
                         return Err(Error::ImportResolutionUnimplemented);
                     }
                 }
-                self.resolve_action_stmts(stmts, &mut test_env)
+                let res = self.resolve_action_stmts(stmts, &mut test_env);
+                self.current_context = prev_context;
+                res
             }
             Stmt::Watch { expr } => self.resolve_expr(expr, env),
         }
@@ -287,13 +340,21 @@ impl Resolver {
             ActionStmt::Assert(expr, _text) => self.resolve_expr(expr, env),
             ActionStmt::Assign { name, expr } => {
                 if env.find(*name).is_none() {
-                    return Err(Error::UnboundVariable { name: *name });
+                    return Err(Error::UnknownIdentifier {
+                        name: *name,
+                        expected: ExpectedSort::Variable,
+                        context_name: self.current_context,
+                    });
                 }
                 self.resolve_expr(expr, env)
             }
             ActionStmt::Insert { row, table_name } => {
                 if env.find(*table_name).is_none() {
-                    return Err(Error::UnboundVariable { name: *table_name });
+                    return Err(Error::UnknownIdentifier {
+                        name: *table_name,
+                        expected: ExpectedSort::Table,
+                        context_name: self.current_context,
+                    });
                 }
                 self.resolve_expr(row, env)
             }
@@ -329,7 +390,11 @@ impl Resolver {
             }
             Expr::Variable { name } => {
                 if env.find(*name).is_none() {
-                    return Err(Error::UnboundVariable { name: *name });
+                    return Err(Error::UnknownIdentifier {
+                        name: *name,
+                        expected: ExpectedSort::Variable,
+                        context_name: self.current_context,
+                    });
                 }
                 Ok(())
             }
@@ -381,8 +446,10 @@ impl Resolver {
                 member_name: _,
             } => {
                 if env.find(*service_name).is_none() {
-                    return Err(Error::UnboundVariable {
+                    return Err(Error::UnknownIdentifier {
                         name: *service_name,
+                        expected: ExpectedSort::Service,
+                        context_name: self.current_context,
                     });
                 }
                 Ok(())
@@ -393,7 +460,11 @@ impl Resolver {
                 where_clause,
             } => {
                 if env.find(*table_name).is_none() {
-                    return Err(Error::UnboundVariable { name: *table_name });
+                    return Err(Error::UnknownIdentifier {
+                        name: *table_name,
+                        expected: ExpectedSort::Table,
+                        context_name: self.current_context,
+                    });
                 }
                 self.resolve_expr(where_clause.as_ref(), env)
             }
@@ -410,7 +481,11 @@ impl Resolver {
                 identity,
             } => {
                 if env.find(*table_name).is_none() {
-                    return Err(Error::UnboundVariable { name: *table_name });
+                    return Err(Error::UnknownIdentifier {
+                        name: *table_name,
+                        expected: ExpectedSort::Table,
+                        context_name: self.current_context,
+                    });
                 }
                 self.resolve_expr(operation.as_ref(), env)?;
                 self.resolve_expr(identity.as_ref(), env)
@@ -645,7 +720,14 @@ mod tests {
 
         let mut bad_env = Env::new(None);
         let res = resolver.resolve_stmt(&bad_stmt, &mut bad_env);
-        assert_eq!(res, Err(Error::UnboundVariable { name: local_x }));
+        assert_eq!(
+            res,
+            Err(Error::UnknownIdentifier {
+                name: local_x,
+                expected: ExpectedSort::Variable,
+                context_name: Some(s),
+            })
+        );
     }
 
     /// Verify lexical isolation between sibling action blocks
@@ -677,15 +759,23 @@ mod tests {
             is_pub: true,
         };
 
+        let s = interner.insert("s");
         let stmt = Stmt::Service {
-            name: interner.insert("s"),
+            name: s,
             decls: vec![decl],
         };
 
         let mut env = Env::new(None);
         let mut resolver = Resolver::new();
         let res = resolver.resolve_stmt(&stmt, &mut env);
-        assert_eq!(res, Err(Error::UnboundVariable { name: x }));
+        assert_eq!(
+            res,
+            Err(Error::UnknownIdentifier {
+                name: x,
+                expected: ExpectedSort::Variable,
+                context_name: Some(s),
+            })
+        );
     }
 
     /// Verify nested function parameter binding and scope capture
@@ -738,7 +828,14 @@ mod tests {
         };
 
         let res = resolver.resolve_expr(&escaped_closure, &env);
-        assert_eq!(res, Err(Error::UnboundVariable { name: b }));
+        assert_eq!(
+            res,
+            Err(Error::UnknownIdentifier {
+                name: b,
+                expected: ExpectedSort::Variable,
+                context_name: None,
+            })
+        );
     }
 
     /// Verify scope depth limit increases and decreases correctly
@@ -840,7 +937,14 @@ mod tests {
 
         // Resolving should fail because z is unbound
         let res = resolver.resolve_expr(&bad_expr, &env);
-        assert_eq!(res, Err(Error::UnboundVariable { name: z }));
+        assert_eq!(
+            res,
+            Err(Error::UnknownIdentifier {
+                name: z,
+                expected: ExpectedSort::Variable,
+                context_name: None,
+            })
+        );
 
         // Ensure that the depth was unwound and returned to 0
         assert_eq!(resolver.depth, 0);
@@ -937,14 +1041,14 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::ImportResolutionUnimplemented => {}
-            Error::UnboundVariable { .. } | Error::DepthLimit => {
+            Error::UnknownIdentifier { .. } | Error::DepthLimit => {
                 panic!("Expected ImportResolutionUnimplemented error");
             }
         }
     }
 
     /// Verify testing an undefined service yields an
-    /// `UnboundVariable` error
+    /// `UnknownIdentifier` error
     #[test]
     fn test_unit_test_block_undefined_service() {
         let mut interner = Interner::new();
@@ -964,11 +1068,17 @@ mod tests {
         let result = resolver.resolve_program(&program, &mut env);
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::UnboundVariable { name } => {
+            Error::UnknownIdentifier {
+                name,
+                expected,
+                context_name,
+            } => {
                 assert_eq!(name, s);
+                assert_eq!(expected, ExpectedSort::Service);
+                assert_eq!(context_name, None);
             }
             Error::ImportResolutionUnimplemented | Error::DepthLimit => {
-                panic!("Expected UnboundVariable error");
+                panic!("Expected UnknownIdentifier error");
             }
         }
     }
