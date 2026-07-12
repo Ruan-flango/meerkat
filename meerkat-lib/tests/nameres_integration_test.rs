@@ -799,10 +799,6 @@ fn test_integration_test_block_hoisting() {
     assert!(res.is_ok());
 }
 
-/// Verify testing an imported service yields an
-/// `ImportResolutionUnimplemented` error
-/// TODO: Remove this test when name resolution and type
-/// checking are implemented for imports
 /// Verify testing an imported service is ignored with a warning
 #[test]
 fn test_integration_test_block_imported_ignored() {

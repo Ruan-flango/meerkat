@@ -93,13 +93,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 printer.print_program(&prog);
             }
 
-            // TODO: Insert static checks here. The static checks must
-            // occur at this program point in order to properly
-            // sequence the semantics of these CLI flags. All
-            // standard checks go here; additional static checks
-            // must occur after this AND in the `check_only`
-            // branch below; both must be simultaneously
-            // maintained
+            // Perform static validation checks on the parsed program
+            // statements before executing or starting the server
             node.check(&prog)
                 .map_err(|e| format!("Static check error: {}", e))?;
 

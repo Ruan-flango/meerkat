@@ -14,6 +14,7 @@ use crate::runtime::{nameres, Env, Manager};
 
 /// Root manager for compiling and executing a Meerkat node
 pub struct Node<'a> {
+    /// Reserved for the `Node` migration documented in `Issue 106`
     pub service_classes: Env<'a, ServiceType<'a>>,
     pub interner: Interner,
 }
