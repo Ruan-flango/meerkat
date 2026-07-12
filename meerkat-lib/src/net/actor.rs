@@ -348,7 +348,10 @@ impl NetworkActor {
 
                 Some((peer, mut stream)) = incoming.next() => {
                     let event_tx = event_tx.clone();
-                    tokio::spawn(async move {
+                    // #39: spawn via the platform-split helper. tokio::spawn
+                    // panics ("no reactor running") on wasm, which has no tokio
+                    // runtime; spawn_event_loop uses spawn_local there.
+                    spawn_event_loop(async move {
                         Self::handle_incoming(peer, &mut stream, event_tx).await;
                     });
                 }

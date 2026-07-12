@@ -1,0 +1,19 @@
+service list_test {
+    var total = 0;
+}
+
+@test(list_test) {
+    // Test list literal
+    let xs = [1, 2, 3];
+    assert(xs == [1, 2, 3]);
+
+    // Test range literal
+    let r = 1..4;
+    assert(r == [1, 2, 3]);
+
+    // Test for loop summing elements
+    for i in 0..3 {
+        total = total + i;
+    }
+    assert(total == 3);  // 0 + 1 + 2
+}

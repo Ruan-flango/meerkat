@@ -56,14 +56,7 @@ impl Expr {
             Expr::Action(stmts) => {
                 let mut deps = HashSet::new();
                 for stmt in stmts {
-                    match stmt {
-                        ActionStmt::Let { expr, .. } => deps.extend(expr.cross_service_deps()),
-                        ActionStmt::Expr(expr) => deps.extend(expr.cross_service_deps()),
-                        ActionStmt::Do(expr) => deps.extend(expr.cross_service_deps()),
-                        ActionStmt::Assert(expr, _) => deps.extend(expr.cross_service_deps()),
-                        ActionStmt::Assign { expr, .. } => deps.extend(expr.cross_service_deps()),
-                        ActionStmt::Insert { row, .. } => deps.extend(row.cross_service_deps()),
-                    }
+                    deps.extend(cross_service_deps_in_action_stmt(stmt));
                 }
                 deps
             }
@@ -75,6 +68,18 @@ impl Expr {
             } => {
                 let mut deps = operation.cross_service_deps();
                 deps.extend(identity.cross_service_deps());
+                deps
+            }
+            Expr::List(exprs) => {
+                let mut deps = HashSet::new();
+                for expr in exprs {
+                    deps.extend(expr.cross_service_deps());
+                }
+                deps
+            }
+            Expr::Range { start, end } => {
+                let mut deps = start.cross_service_deps();
+                deps.extend(end.cross_service_deps());
                 deps
             }
         }
@@ -151,31 +156,12 @@ impl Expr {
             }
             Expr::Action(stmts) => {
                 let mut free_vars = HashSet::new();
+                let mut action_binds = var_binded.clone();
                 for stmt in stmts {
-                    match stmt {
-                        ActionStmt::Assign { name: _, expr } => {
-                            free_vars.extend(expr.free_var(reactive_names, var_binded));
-                        }
-                        ActionStmt::Do(expr) => {
-                            free_vars.extend(expr.free_var(reactive_names, var_binded));
-                        }
-                        ActionStmt::Assert(expr, _) => {
-                            free_vars.extend(expr.free_var(reactive_names, var_binded));
-                        }
-                        ActionStmt::Let {
-                            name: _,
-                            ty: _,
-                            expr,
-                        } => {
-                            free_vars.extend(expr.free_var(reactive_names, var_binded));
-                        }
-                        ActionStmt::Expr(expr) => {
-                            free_vars.extend(expr.free_var(reactive_names, var_binded));
-                        }
-                        ActionStmt::Insert { row, .. } => {
-                            free_vars.extend(row.free_var(reactive_names, var_binded));
-                        }
-                    }
+                    let (stmt_free_vars, new_binds) =
+                        free_vars_in_action_stmt(stmt, reactive_names, &action_binds);
+                    free_vars.extend(stmt_free_vars);
+                    action_binds = new_binds;
                 }
                 free_vars.difference(reactive_names).cloned().collect()
             }
@@ -202,6 +188,74 @@ impl Expr {
                 free_vars.extend(identity.free_var(reactive_names, var_binded));
                 free_vars
             }
+            Expr::List(val) => {
+                let mut free_vars = HashSet::new();
+                for item in val {
+                    free_vars.extend(item.free_var(reactive_names, var_binded));
+                }
+                free_vars
+            }
+            Expr::Range { start, end } => {
+                let mut free_vars = start.free_var(reactive_names, var_binded);
+                free_vars.extend(end.free_var(reactive_names, var_binded));
+                free_vars
+            }
+        }
+    }
+}
+
+fn free_vars_in_action_stmt(
+    stmt: &ActionStmt,
+    reactive_names: &HashSet<Symbol>,
+    var_binded: &HashSet<Symbol>,
+) -> (HashSet<Symbol>, HashSet<Symbol>) {
+    let free_vars = match stmt {
+        ActionStmt::Assign { expr, .. } => expr.free_var(reactive_names, var_binded),
+        ActionStmt::Do(expr) => expr.free_var(reactive_names, var_binded),
+        ActionStmt::Assert(expr, _) => expr.free_var(reactive_names, var_binded),
+        ActionStmt::Let { expr, .. } => expr.free_var(reactive_names, var_binded),
+        ActionStmt::Expr(expr) => expr.free_var(reactive_names, var_binded),
+        ActionStmt::Insert { row, .. } => row.free_var(reactive_names, var_binded),
+        ActionStmt::For {
+            var,
+            iterable,
+            body,
+        } => {
+            let mut free_vars = iterable.free_var(reactive_names, var_binded);
+            let mut body_binds = var_binded.clone();
+            body_binds.insert(*var);
+            for s in body {
+                let (stmt_free_vars, new_binds) =
+                    free_vars_in_action_stmt(s, reactive_names, &body_binds);
+                free_vars.extend(stmt_free_vars);
+                body_binds = new_binds;
+            }
+            free_vars
+        }
+    };
+
+    let mut new_binds = var_binded.clone();
+    if let ActionStmt::Let { name, .. } = stmt {
+        new_binds.insert(*name);
+    }
+
+    (free_vars, new_binds)
+}
+
+fn cross_service_deps_in_action_stmt(stmt: &ActionStmt) -> HashSet<(Symbol, Symbol)> {
+    match stmt {
+        ActionStmt::Let { expr, .. } => expr.cross_service_deps(),
+        ActionStmt::Expr(expr) => expr.cross_service_deps(),
+        ActionStmt::Do(expr) => expr.cross_service_deps(),
+        ActionStmt::Assert(expr, _) => expr.cross_service_deps(),
+        ActionStmt::Assign { expr, .. } => expr.cross_service_deps(),
+        ActionStmt::Insert { row, .. } => row.cross_service_deps(),
+        ActionStmt::For { iterable, body, .. } => {
+            let mut deps = iterable.cross_service_deps();
+            for s in body {
+                deps.extend(cross_service_deps_in_action_stmt(s));
+            }
+            deps
         }
     }
 }

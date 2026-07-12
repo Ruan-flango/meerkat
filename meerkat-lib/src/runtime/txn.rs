@@ -6,7 +6,7 @@ use crate::runtime::interner::Symbol;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// A globally unique transaction identifier represented by `TxnId`
 ///

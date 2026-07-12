@@ -83,13 +83,6 @@ pub(crate) enum HtmlPart {
 /// renaming), and render it through [`HtmlTemplate::render`]. This mirrors the
 /// [`Html`] value ADT and is the boundary at which HTML validation will later
 /// be added.
-/// A borrowed view of one part of an HTML template, for read-only traversal
-/// (e.g. the AST printer) without exposing the internal representation.
-pub enum HtmlPartView<'a> {
-    Text(&'a str),
-    Expr(&'a Expr),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HtmlTemplate {
     parts: Vec<HtmlPart>,
@@ -116,15 +109,22 @@ impl HtmlTemplate {
         })
     }
 
-    /// Iterate the template's parts in order, as borrowed views.
+    /// #39: Print this template's AST structure via the given printer.
     ///
-    /// Gives ordered access to literal text and embedded expressions (for the
-    /// AST printer) without exposing the internal `HtmlPart` representation.
-    pub fn parts(&self) -> impl Iterator<Item = HtmlPartView<'_>> {
-        self.parts.iter().map(|p| match p {
-            HtmlPart::Text(t) => HtmlPartView::Text(t),
-            HtmlPart::Expr(e) => HtmlPartView::Expr(e),
-        })
+    /// The html module owns how a template is displayed, so the internal
+    /// representation stays hidden even from the printer. Literal text is
+    /// printed directly; embedded expressions are delegated back to the
+    /// printer's `print_expr`.
+    pub fn print_ast(&self, printer: &crate::runtime::ast::printer::AstPrinter, indent: usize) {
+        for part in &self.parts {
+            match part {
+                HtmlPart::Text(t) => {
+                    printer.print_indent(indent);
+                    println!("Text: {:?}", t);
+                }
+                HtmlPart::Expr(e) => printer.print_expr(e, indent),
+            }
+        }
     }
 
     /// Render the template into an [`Html`] value.

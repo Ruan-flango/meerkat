@@ -13,6 +13,12 @@ pub struct NetField {
     pub ty: NetTableType,
 }
 
+/// Network representation of a service type holding ordered fields
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct NetServiceType {
+    pub fields: Vec<(String, NetType)>,
+}
+
 /// Network representation of a type in the Meerkat language
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum NetType {
@@ -22,6 +28,7 @@ pub enum NetType {
     Unit,
     Tuple(Vec<NetType>),
     Func(Box<NetType>, Box<NetType>),
+    List(Box<NetType>),
 }
 
 /// Network representation of a function parameter
@@ -54,6 +61,11 @@ pub enum NetActionStmt {
         row: NetExpr,
         table_name: String,
     },
+    For {
+        var: String,
+        iterable: NetExpr,
+        body: Vec<NetActionStmt>,
+    },
 }
 
 /// Network representation of a value
@@ -85,6 +97,13 @@ pub enum NetValue {
         stmts: Vec<NetActionStmt>,
         env: Vec<(String, NetValue)>,
         service_net_id: ServiceNetId,
+    },
+    List {
+        vals: Vec<NetValue>,
+    },
+    Range {
+        start: i32,
+        end: i32,
     },
 }
 
@@ -146,6 +165,11 @@ pub enum NetExpr {
         column_name: String,
         operation: Box<NetExpr>,
         identity: Box<NetExpr>,
+    },
+    List(Vec<NetExpr>),
+    Range {
+        start: Box<NetExpr>,
+        end: Box<NetExpr>,
     },
 }
 

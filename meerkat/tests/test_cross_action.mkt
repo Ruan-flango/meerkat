@@ -1,0 +1,13 @@
+service s1 {
+    pub def action1 = action {
+        do s2.action2;
+    };
+}
+service s2 {
+    pub def action2 = action {
+        do s1.action1;
+    };
+}
+@test(s1) {
+    assert(1 == 1);
+}

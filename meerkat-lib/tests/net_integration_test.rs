@@ -1,6 +1,27 @@
 use meerkat_lib::net::*;
 use tokio::time::{sleep, Duration};
 
+/// #39: unique temp directory per test invocation, so file-serving tests do
+/// not share filesystem state.
+fn unique_test_dir(label: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "meerkat_it_{}_{}_{}_{}",
+        label,
+        std::process::id(),
+        nanos,
+        n
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_send_and_receive() {
     let mut server = NetworkActor::new(NodeType::Server).await.unwrap();
@@ -503,4 +524,193 @@ async fn test_circuit_relay() {
         relay_reply
     );
     println!("circuit relay test passed");
+}
+
+/// #39: whole-file round-trip of the service-code protocol over the mock
+/// network. A client requests a file by path; the server side validates the
+/// request and replies with the whole file source (not a single sliced
+/// service), which the client receives. The client then processes that source
+/// through the normal program-loading path (exercised elsewhere); here we
+/// assert the transport and whole-file return.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_service_code_request_roundtrip() {
+    use meerkat_lib::net::codec::serve_service_code;
+
+    let registry = MockNetwork::new_registry();
+    let mut server = MockNetwork::new_with_registry(registry.clone());
+    let mut client = MockNetwork::new_with_registry(registry.clone());
+
+    let server_reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
+        })
+        .await;
+    let server_addr = match server_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+    let client_reply = client
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9001"),
+        })
+        .await;
+    let client_addr = match client_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+
+    // The server serves files from a base directory; write the requested
+    // .mkt file there so the server can resolve and read it.
+    let served_dir = unique_test_dir("roundtrip");
+    let served_source = "service counter { pub var count = 0; }\nservice other { var z = 1; }";
+    std::fs::write(served_dir.join("counter.mkt"), served_source).unwrap();
+
+    client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: server_addr,
+            msg: MeerkatMessage::ServiceCodeRequest {
+                request_id: 1,
+                path: "counter.mkt".to_string(),
+                reply_to: client_addr.0.clone(),
+            },
+        })
+        .await;
+
+    let event = server
+        .event_rx
+        .try_recv()
+        .expect("Server should have received the code request");
+    let (request_id, path, reply_to) = match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::ServiceCodeRequest {
+                    request_id,
+                    path,
+                    reply_to,
+                },
+            ..
+        } => (request_id, path, reply_to),
+        other => panic!("Expected ServiceCodeRequest, got {:?}", other),
+    };
+
+    // Server serves the file via the same helper run_server uses (validate,
+    // resolve the path against the base dir, read the file).
+    let response = serve_service_code(request_id, path, &reply_to, &served_dir);
+
+    server
+        .handle_command(NetworkCommand::SendMessage {
+            addr: Address::new(&reply_to),
+            msg: response,
+        })
+        .await;
+
+    let event = client
+        .event_rx
+        .try_recv()
+        .expect("Client should have received the code response");
+    match event {
+        NetworkEvent::MessageReceived {
+            msg: MeerkatMessage::ServiceCodeResponse { source, .. },
+            ..
+        } => {
+            // The whole file is returned, both services included.
+            assert_eq!(source, served_source);
+        }
+        other => panic!("Expected ServiceCodeResponse, got {:?}", other),
+    }
+
+    let _ = std::fs::remove_dir_all(&served_dir);
+}
+
+/// #39: validation error path. A client sends a request whose path exceeds the
+/// length limit; the server side rejects it via validate_service_code_request
+/// and replies with a ServiceCodeError, which the client receives.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_service_code_request_rejects_oversized_path() {
+    use meerkat_lib::net::codec::serve_service_code;
+    use meerkat_lib::runtime::limits::MAX_NET_REQUEST_STRING_LENGTH;
+
+    let registry = MockNetwork::new_registry();
+    let mut server = MockNetwork::new_with_registry(registry.clone());
+    let mut client = MockNetwork::new_with_registry(registry.clone());
+
+    let server_reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9002"),
+        })
+        .await;
+    let server_addr = match server_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+    let client_reply = client
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9003"),
+        })
+        .await;
+    let client_addr = match client_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+
+    let oversized_path = "a".repeat(MAX_NET_REQUEST_STRING_LENGTH + 1);
+
+    client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: server_addr,
+            msg: MeerkatMessage::ServiceCodeRequest {
+                request_id: 2,
+                path: oversized_path,
+                reply_to: client_addr.0.clone(),
+            },
+        })
+        .await;
+
+    let event = server
+        .event_rx
+        .try_recv()
+        .expect("Server should have received the code request");
+    let (request_id, path, reply_to) = match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::ServiceCodeRequest {
+                    request_id,
+                    path,
+                    reply_to,
+                },
+            ..
+        } => (request_id, path, reply_to),
+        other => panic!("Expected ServiceCodeRequest, got {:?}", other),
+    };
+
+    // Validation rejects the oversized path before any file I/O, so the base
+    // dir does not need to contain anything.
+    let served_dir = unique_test_dir("oversized");
+    let response = serve_service_code(request_id, path, &reply_to, &served_dir);
+    let _ = std::fs::remove_dir_all(&served_dir);
+
+    server
+        .handle_command(NetworkCommand::SendMessage {
+            addr: Address::new(&reply_to),
+            msg: response,
+        })
+        .await;
+
+    let event = client
+        .event_rx
+        .try_recv()
+        .expect("Client should have received the code error");
+    match event {
+        NetworkEvent::MessageReceived {
+            msg: MeerkatMessage::ServiceCodeError { error, .. },
+            ..
+        } => {
+            assert!(
+                error.contains("path"),
+                "error should mention path: {}",
+                error
+            );
+        }
+        other => panic!("Expected ServiceCodeError, got {:?}", other),
+    }
 }

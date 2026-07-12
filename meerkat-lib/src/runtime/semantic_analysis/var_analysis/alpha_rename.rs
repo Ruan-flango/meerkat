@@ -82,6 +82,15 @@ impl Expr {
                 operation.alpha_rename(var_binded, renames);
                 identity.alpha_rename(var_binded, renames);
             }
+            Expr::List(val) => {
+                for item in val {
+                    item.alpha_rename(var_binded, renames);
+                }
+            }
+            Expr::Range { start, end } => {
+                start.alpha_rename(var_binded, renames);
+                end.alpha_rename(var_binded, renames);
+            }
         }
     }
 }

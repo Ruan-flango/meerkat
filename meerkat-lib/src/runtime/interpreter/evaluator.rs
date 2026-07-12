@@ -138,6 +138,27 @@ pub async fn eval(
         Expr::Binop { op, expr1, expr2 } => {
             let val1 = eval(expr1, env, ctx).await?;
             let val2 = eval(expr2, env, ctx).await?;
+            if *op == BinOp::Eq {
+                match (&val1, &val2) {
+                    (Value::List { vals: v1 }, Value::List { vals: v2 }) => {
+                        return Ok(Value::Bool { val: v1 == v2 });
+                    }
+                    (Value::Range { start: s1, end: e1 }, Value::Range { start: s2, end: e2 }) => {
+                        return Ok(Value::Bool {
+                            val: s1 == s2 && e1 == e2,
+                        });
+                    }
+                    (Value::List { .. }, Value::Range { .. })
+                    | (Value::Range { .. }, Value::List { .. }) => {
+                        if let (Some(l1), Some(l2)) =
+                            (val1.to_list_elements(), val2.to_list_elements())
+                        {
+                            return Ok(Value::Bool { val: l1 == l2 });
+                        }
+                    }
+                    _ => {}
+                }
+            }
             match (op, val1, val2) {
                 (BinOp::Add, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
                     Ok(Value::Int { val: v1 + v2 })
@@ -296,6 +317,25 @@ pub async fn eval(
         | Expr::Select { .. }
         | Expr::Table { .. }
         | Expr::Fold { .. } => Err(EvalError::NotImplemented),
+        Expr::List(exprs) => {
+            let mut vals = Vec::new();
+            for expr in exprs {
+                vals.push(eval(expr, env, ctx).await?);
+            }
+            Ok(Value::List { vals })
+        }
+        Expr::Range { start, end } => {
+            let start_val = eval(start, env, ctx).await?;
+            let end_val = eval(end, env, ctx).await?;
+            match (start_val, end_val) {
+                (Value::Int { val: s }, Value::Int { val: e }) => {
+                    Ok(Value::Range { start: s, end: e })
+                }
+                _ => Err(EvalError::TypeError(
+                    "Range bounds must evaluate to integers".to_string(),
+                )),
+            }
+        }
     }
 }
 
@@ -490,6 +530,100 @@ mod tests {
             Err(EvalError::RuntimeError(ref s)) => assert_eq!(s, "Integer overflow"),
             other => panic!("Expected Err(EvalError::RuntimeError), got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_list_and_range_evaluation() {
+        let mut manager = Manager::new(Interner::new());
+        let mut ctx = EvalContext {
+            manager: &mut manager,
+            service_name: Symbol::empty(),
+            txn: None,
+        };
+
+        // Test list literal [1, 2, 3]
+        let list_expr = Expr::List(vec![
+            Expr::Literal {
+                val: Value::Int { val: 1 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 2 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 3 },
+            },
+        ]);
+        let list_val = eval(&list_expr, &[], &mut ctx).await.unwrap();
+        assert_eq!(
+            list_val,
+            Value::List {
+                vals: vec![
+                    Value::Int { val: 1 },
+                    Value::Int { val: 2 },
+                    Value::Int { val: 3 },
+                ]
+            }
+        );
+
+        // Test range literal 0..3
+        let range_expr = Expr::Range {
+            start: Box::new(Expr::Literal {
+                val: Value::Int { val: 0 },
+            }),
+            end: Box::new(Expr::Literal {
+                val: Value::Int { val: 3 },
+            }),
+        };
+        let range_val = eval(&range_expr, &[], &mut ctx).await.unwrap();
+        assert_eq!(range_val, Value::Range { start: 0, end: 3 });
+
+        // Test range evaluates to list elements correctly
+        let elements = range_val.to_list_elements().unwrap();
+        assert_eq!(
+            elements,
+            vec![
+                Value::Int { val: 0 },
+                Value::Int { val: 1 },
+                Value::Int { val: 2 },
+            ]
+        );
+
+        // Test equality between list and range
+        let eq_expr = Expr::Binop {
+            op: BinOp::Eq,
+            expr1: Box::new(list_expr),
+            expr2: Box::new(range_expr),
+        };
+        let eq_val = eval(&eq_expr, &[], &mut ctx).await.unwrap();
+        assert_eq!(eq_val, Value::Bool { val: false });
+
+        // Test equality between range 1..4 and list [1, 2, 3]
+        let range_expr_2 = Expr::Range {
+            start: Box::new(Expr::Literal {
+                val: Value::Int { val: 1 },
+            }),
+            end: Box::new(Expr::Literal {
+                val: Value::Int { val: 4 },
+            }),
+        };
+        let list_expr_2 = Expr::List(vec![
+            Expr::Literal {
+                val: Value::Int { val: 1 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 2 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 3 },
+            },
+        ]);
+        let eq_expr_2 = Expr::Binop {
+            op: BinOp::Eq,
+            expr1: Box::new(list_expr_2),
+            expr2: Box::new(range_expr_2),
+        };
+        let eq_val_2 = eval(&eq_expr_2, &[], &mut ctx).await.unwrap();
+        assert_eq!(eq_val_2, Value::Bool { val: true });
     }
 
     /// #39: an html template evaluates to a Value::Html whose rendered markup

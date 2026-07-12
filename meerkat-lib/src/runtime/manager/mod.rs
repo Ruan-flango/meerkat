@@ -9,8 +9,9 @@ use crate::net::{
 use crate::runtime::interner::{Interner, Symbol};
 use crate::runtime::txn::{Transaction, TxnId, VarState};
 use std::collections::{HashMap, HashSet};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 use tokio::sync::oneshot;
-use tokio::time::Duration;
 
 pub struct Service {
     /// Globally unique identity of this service (address-based when networked).
@@ -930,6 +931,13 @@ impl Manager {
                             MeerkatMessage::CommitResponse { request_id, .. } => Some(*request_id),
                             MeerkatMessage::AbortResponse { request_id, .. } => Some(*request_id),
                             MeerkatMessage::WaitParked { request_id, .. } => Some(*request_id),
+                            // #39: code responses are replies routed to the waiting client.
+                            MeerkatMessage::ServiceCodeResponse { request_id, .. } => {
+                                Some(*request_id)
+                            }
+                            MeerkatMessage::ServiceCodeError { request_id, .. } => {
+                                Some(*request_id)
+                            }
                             MeerkatMessage::Ping { .. }
                             | MeerkatMessage::Pong { .. }
                             | MeerkatMessage::Announce { .. }
@@ -940,6 +948,8 @@ impl Manager {
                             | MeerkatMessage::Commit { .. }
                             | MeerkatMessage::Abort { .. }
                             | MeerkatMessage::RequestUpdates { .. }
+                            // #39: an incoming code request is handled server-side, not a reply.
+                            | MeerkatMessage::ServiceCodeRequest { .. }
                             | MeerkatMessage::Update { .. } => None,
                         };
                         if let Some(request_id) = rid {
@@ -975,43 +985,99 @@ impl Manager {
         let (tx, mut rx) = oneshot::channel::<MeerkatMessage>();
         self.pending_replies.insert(request_id, tx);
 
-        // Loop with pinned timeout + tokio::select!. Each iteration dispatches
-        // pending network events then checks for reply, timeout, or yields 10ms.
-        // The loop is required until the tokio::join! background message loop
-        // architecture is implemented as a follow-up.
-        let timeout = tokio::time::sleep(Duration::from_secs(15));
-        tokio::pin!(timeout);
+        // Loop dispatching pending network events then checking for reply,
+        // timeout, or a short yield. The loop is required until the background
+        // message-loop architecture is implemented as a follow-up.
+        //
+        // #39: the timer is platform-split. Native uses tokio's timer; wasm has
+        // no tokio timer driver in the browser, so it uses gloo-timers, the same
+        // way spawn_event_loop is split between tokio and wasm_bindgen_futures.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let timeout = tokio::time::sleep(Duration::from_secs(15));
+            tokio::pin!(timeout);
 
-        loop {
-            self.dispatch_network_events().await;
-            tokio::select! {
-                biased;
-                result = &mut rx => {
-                    match result {
-                        // Owner parked our request (wait-die wait): it is alive
-                        // and still queued, so reset the timeout, re-register a
-                        // fresh reply channel, and keep waiting.
-                        Ok(MeerkatMessage::WaitParked { .. }) => {
-                            let (ntx, nrx) = oneshot::channel::<MeerkatMessage>();
-                            self.pending_replies.insert(request_id, ntx);
-                            rx = nrx;
-                            timeout
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + Duration::from_secs(15));
-                        }
-                        Ok(msg) => return Ok(msg),
-                        Err(_) => {
-                            return Err(EvalError::LocalDispatchFailed(
-                                "Reply channel closed".to_string(),
-                            ))
+            loop {
+                self.dispatch_network_events().await;
+                tokio::select! {
+                    biased;
+                    result = &mut rx => {
+                        match result {
+                            // Owner parked our request (wait-die wait): it is
+                            // alive and still queued, so reset the timeout,
+                            // re-register a fresh reply channel, and keep waiting.
+                            Ok(MeerkatMessage::WaitParked { .. }) => {
+                                let (ntx, nrx) = oneshot::channel::<MeerkatMessage>();
+                                self.pending_replies.insert(request_id, ntx);
+                                rx = nrx;
+                                timeout
+                                    .as_mut()
+                                    .reset(tokio::time::Instant::now() + Duration::from_secs(15));
+                            }
+                            Ok(msg) => return Ok(msg),
+                            Err(_) => {
+                                return Err(EvalError::LocalDispatchFailed(
+                                    "Reply channel closed".to_string(),
+                                ))
+                            }
                         }
                     }
+                    _ = &mut timeout => {
+                        self.pending_replies.remove(&request_id);
+                        return Err(EvalError::LocalDispatchFailed(timeout_msg));
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
                 }
-                _ = &mut timeout => {
-                    self.pending_replies.remove(&request_id);
-                    return Err(EvalError::LocalDispatchFailed(timeout_msg));
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            use futures::FutureExt;
+
+            // Deadline tracked with performance.now() via instant/web-time-free
+            // arithmetic: recreate the timeout each iteration rather than reset.
+            let mut remaining_ms: i64 = 15_000;
+            loop {
+                self.dispatch_network_events().await;
+
+                // #39: SendWrapper makes the (browser-thread-only) timer
+                // futures Send so callers on the Send-bounded eval path still
+                // compile. Safe: wasm is single-threaded, so the future is only
+                // ever polled on its origin thread.
+                let mut timeout = send_wrapper::SendWrapper::new(
+                    gloo_timers::future::TimeoutFuture::new(remaining_ms.max(0) as u32),
+                )
+                .fuse();
+                let mut yield_tick =
+                    send_wrapper::SendWrapper::new(gloo_timers::future::TimeoutFuture::new(10))
+                        .fuse();
+
+                futures::select! {
+                    result = (&mut rx).fuse() => {
+                        match result {
+                            Ok(MeerkatMessage::WaitParked { .. }) => {
+                                let (ntx, nrx) = oneshot::channel::<MeerkatMessage>();
+                                self.pending_replies.insert(request_id, ntx);
+                                rx = nrx;
+                                remaining_ms = 15_000;
+                            }
+                            Ok(msg) => return Ok(msg),
+                            Err(_) => {
+                                return Err(EvalError::LocalDispatchFailed(
+                                    "Reply channel closed".to_string(),
+                                ))
+                            }
+                        }
+                    }
+                    _ = timeout => {
+                        self.pending_replies.remove(&request_id);
+                        return Err(EvalError::LocalDispatchFailed(timeout_msg));
+                    }
+                    _ = yield_tick => {
+                        remaining_ms -= 10;
+                    }
                 }
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
             }
         }
     }
@@ -1074,7 +1140,9 @@ impl Manager {
     fn random_node_id() -> u64 {
         use std::collections::hash_map::RandomState;
         use std::hash::{BuildHasher, Hasher};
-        use std::time::{SystemTime, UNIX_EPOCH};
+        // #39: web_time provides a wasm-compatible clock; std::time::SystemTime
+        // panics ("time not implemented") on wasm32.
+        use web_time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -1097,6 +1165,52 @@ impl Manager {
             })
             .map(|addr| addr.ip().to_string())
             .unwrap_or_else(|_| "127.0.0.1".to_string())
+    }
+
+    /// #39: Fetch the source of a `.mkt` file from a remote server by path.
+    ///
+    /// Sends a `ServiceCodeRequest` and awaits the reply, reusing the same
+    /// request/reply machinery as remote lookups. Returns the source text of
+    /// the requested `.mkt` file. The caller processes it through the
+    /// normal program-loading path (creating services and resolving imports),
+    /// rather than a separate loop here, to avoid duplicating that logic. This
+    /// is the mechanism a browser client uses to load a file it imports but
+    /// cannot read from a local disk.
+    pub async fn fetch_service_source(
+        &mut self,
+        path: &str,
+        server_addr: Address,
+    ) -> Result<String, EvalError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+        let request_id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        let reply_to = self.local_reply_addr().await;
+
+        let msg = MeerkatMessage::ServiceCodeRequest {
+            request_id,
+            path: path.to_string(),
+            reply_to,
+        };
+
+        let reply = self
+            .send_and_await_reply(
+                server_addr,
+                msg,
+                request_id,
+                format!("Timeout waiting for source of file '{}'", path),
+            )
+            .await?;
+
+        match reply {
+            MeerkatMessage::ServiceCodeResponse { source, .. } => Ok(source),
+            MeerkatMessage::ServiceCodeError { error, .. } => {
+                Err(EvalError::RemoteDispatchFailed(error))
+            }
+            _ => Err(EvalError::RemoteDispatchFailed(
+                "Unexpected reply to service code request".to_string(),
+            )),
+        }
     }
 
     /// Perform a remote variable lookup over the network
@@ -1187,6 +1301,9 @@ impl Manager {
             | MeerkatMessage::AbortResponse { .. }
             | MeerkatMessage::RequestUpdates { .. }
             | MeerkatMessage::Update { .. }
+            | MeerkatMessage::ServiceCodeRequest { .. }
+            | MeerkatMessage::ServiceCodeResponse { .. }
+            | MeerkatMessage::ServiceCodeError { .. }
             | MeerkatMessage::WaitParked { .. } => Err(EvalError::LocalDispatchFailed(
                 "Unexpected reply to lookup request".to_string(),
             )),
@@ -1322,6 +1439,9 @@ impl Manager {
             | MeerkatMessage::AbortResponse { .. }
             | MeerkatMessage::RequestUpdates { .. }
             | MeerkatMessage::Update { .. }
+            | MeerkatMessage::ServiceCodeRequest { .. }
+            | MeerkatMessage::ServiceCodeResponse { .. }
+            | MeerkatMessage::ServiceCodeError { .. }
             | MeerkatMessage::WaitParked { .. } => Err(EvalError::LocalDispatchFailed(
                 "Unexpected reply to action request".to_string(),
             )),
@@ -1753,6 +1873,9 @@ impl Manager {
             | MeerkatMessage::AbortResponse { .. }
             | MeerkatMessage::RequestUpdates { .. }
             | MeerkatMessage::Update { .. }
+            | MeerkatMessage::ServiceCodeRequest { .. }
+            | MeerkatMessage::ServiceCodeResponse { .. }
+            | MeerkatMessage::ServiceCodeError { .. }
             | MeerkatMessage::WaitParked { .. } => Err(EvalError::LocalDispatchFailed(
                 "Unexpected reply to commit".to_string(),
             )),

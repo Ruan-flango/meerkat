@@ -5,12 +5,16 @@
 
 use crate::error::{Error, Result};
 use crate::net::ast::{
-    NetActionStmt, NetBinOp, NetExpr, NetField, NetParam, NetTableType, NetType, NetUnOp, NetValue,
+    NetActionStmt, NetBinOp, NetExpr, NetField, NetParam, NetServiceType, NetTableType, NetType,
+    NetUnOp, NetValue,
 };
+use crate::net::types::MeerkatMessage;
 use crate::runtime::ast::{ActionStmt, BinOp, Expr, Field, TableType, UnOp, Value};
 use crate::runtime::interner::{Interner, Symbol};
-use crate::runtime::limits::{MAX_IDENTIFIER_LENGTH, MAX_STRING_LITERAL_LENGTH, MAX_TYPE_DEPTH};
-use crate::runtime::tt::{Param, TupleType, Type};
+use crate::runtime::limits::{
+    MAX_IDENTIFIER_LENGTH, MAX_NET_REQUEST_STRING_LENGTH, MAX_STRING_LITERAL_LENGTH, MAX_TYPE_DEPTH,
+};
+use crate::runtime::tt::{Param, ServiceType, TupleType, Type};
 
 fn validate_identifier(s: &str) -> Result<()> {
     if s.len() > MAX_IDENTIFIER_LENGTH {
@@ -47,6 +51,96 @@ fn validate_string_literal(s: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// #39: validate the length-bounded string fields of a `ServiceCodeRequest`
+/// arriving over the wire. `path` and `reply_to` are a resource path and a
+/// network address, not identifiers, so they are length-checked but not
+/// charset-validated or interned. The source in the response is unbounded.
+pub fn validate_service_code_request(path: &str, reply_to: &str) -> Result<()> {
+    for (field, value) in [("path", path), ("reply_to", reply_to)] {
+        if value.len() > MAX_NET_REQUEST_STRING_LENGTH {
+            return Err(Error::LimitExceeded(format!(
+                "{} exceeds maximum length of {} bytes",
+                field, MAX_NET_REQUEST_STRING_LENGTH
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// #39: Handle a `ServiceCodeRequest` end-to-end: validate the length-bounded
+/// fields, safely resolve the requested path against the server's base
+/// directory, read that file, and return a `ServiceCodeResponse` with its
+/// source, or a `ServiceCodeError` describing any failure.
+///
+/// Shared by `run_server` and the integration tests so both exercise the same
+/// logic. The whole file is returned so the client gets any imports and other
+/// services the requested file needs.
+pub fn serve_service_code(
+    request_id: u64,
+    path: String,
+    reply_to: &str,
+    base_dir: &std::path::Path,
+) -> MeerkatMessage {
+    let result = validate_service_code_request(&path, reply_to)
+        .and_then(|()| resolve_served_file(base_dir, &path))
+        .and_then(|file| {
+            std::fs::read_to_string(&file)
+                .map_err(|e| Error::LimitExceeded(format!("failed to read requested file: {}", e)))
+        });
+    match result {
+        Ok(source) => MeerkatMessage::ServiceCodeResponse {
+            request_id,
+            path,
+            source,
+        },
+        Err(e) => MeerkatMessage::ServiceCodeError {
+            request_id,
+            error: e.to_string(),
+        },
+    }
+}
+
+/// #39: Safely resolve a client-requested file path against a server base
+/// directory, for serving `.mkt` source over the network.
+///
+/// This is a zero-trust boundary: the path comes from the network, so it is
+/// validated to prevent directory traversal. An absolute path is rejected, and
+/// the resolved path is canonicalized and required to stay within the
+/// canonicalized base directory (blocking `..` and symlink escapes). Returns
+/// the validated path to read, or an error describing why it was rejected.
+pub fn resolve_served_file(
+    base_dir: &std::path::Path,
+    requested: &str,
+) -> Result<std::path::PathBuf> {
+    use std::path::Path;
+
+    // Reject absolute paths outright; served files are always relative to base.
+    if Path::new(requested).is_absolute() {
+        return Err(Error::LimitExceeded(format!(
+            "requested path must be relative, got absolute: {:?}",
+            requested
+        )));
+    }
+
+    let joined = base_dir.join(requested);
+
+    // Canonicalize both so `..` and symlinks are resolved, then require the
+    // target to remain within the base directory.
+    let canon_base = base_dir.canonicalize().map_err(|e| {
+        Error::LimitExceeded(format!("server base directory is unavailable: {}", e))
+    })?;
+    let canon_target = joined
+        .canonicalize()
+        .map_err(|_| Error::LimitExceeded(format!("requested file not found: {:?}", requested)))?;
+    if !canon_target.starts_with(&canon_base) {
+        return Err(Error::LimitExceeded(format!(
+            "requested path escapes the served directory: {:?}",
+            requested
+        )));
+    }
+    Ok(canon_target)
 }
 
 /// #24: validate and intern the identifier fields of a `RequestUpdates`
@@ -131,6 +225,10 @@ fn encode_type_internal(ty: &Type, depth: usize) -> Result<NetType> {
             let et2 = encode_type_internal(t2, depth + 1)?;
             Ok(NetType::Func(Box::new(et1), Box::new(et2)))
         }
+        Type::List(t) => {
+            let et = encode_type_internal(t, depth + 1)?;
+            Ok(NetType::List(Box::new(et)))
+        }
     }
 }
 
@@ -151,11 +249,45 @@ pub fn encode_type(ty: &Type) -> Result<NetType> {
     encode_type_internal(ty, 0)
 }
 
+/// Encode a runtime `ServiceType` into its network representation
+///
+/// Args:
+///     `st` (`&ServiceType`): The runtime service type to encode
+///     `interner` (`&Interner`): The interner for symbol lookup
+///
+/// Returns:
+///     `Result<NetServiceType>`: The encoded network service type
+///
+/// Raises:
+///     `Error::Message`: If a field is missing due to a broken invariant
+pub fn encode_servicetype<'a>(st: &ServiceType<'a>, interner: &Interner) -> Result<NetServiceType> {
+    let mut fields = Vec::new();
+    for name in st.field_order() {
+        let name_str = interner.get(*name).to_string();
+        // While `ServiceType` encapsulation theoretically guarantees
+        // that `field_order` entries exist in `fields`, we
+        // defensively return an `Error::Message` instead of
+        // panicking to ensure the network service fails
+        // gracefully if an internal bug occurs
+        let field_ty = st.fields().find(*name).ok_or_else(|| {
+            Error::Message(format!(
+                "Internal invariant broken: field_order \
+                     entry missing from fields map: {}",
+                name_str
+            ))
+        })?;
+        let net_ty = encode_type(field_ty)?;
+        fields.push((name_str, net_ty));
+    }
+    Ok(NetServiceType { fields })
+}
+
 /// Decode a network `NetType` with recursion depth accumulator
 ///
 /// Args:
 ///     ty (`NetType`): The network type to decode
 ///     depth (`usize`): The current recursion depth
+///     interner (`&mut Interner`): The interner for interning symbols
 ///
 /// Returns:
 ///     `Result<Type>`: The decoded runtime type
@@ -195,6 +327,10 @@ fn decode_type_internal(ty: NetType, depth: usize) -> Result<Type> {
             let dt2 = decode_type_internal(*t2, depth + 1)?;
             Ok(Type::Func(Box::new(dt1), Box::new(dt2)))
         }
+        NetType::List(t) => {
+            let dt = decode_type_internal(*t, depth + 1)?;
+            Ok(Type::List(Box::new(dt)))
+        }
     }
 }
 
@@ -213,6 +349,33 @@ fn decode_type_internal(ty: NetType, depth: usize) -> Result<Type> {
 ///     maximum limit
 pub fn decode_type(ty: NetType) -> Result<Type> {
     decode_type_internal(ty, 0)
+}
+
+/// Decode a network `NetServiceType` into a runtime `ServiceType`
+///
+/// Args:
+///     nst (`NetServiceType`): The network service type to decode
+///     interner (`&mut Interner`): The interner for interning symbols
+///
+/// Returns:
+///     `Result<ServiceType>`: The decoded runtime service type
+pub fn decode_servicetype<'a>(
+    nst: NetServiceType,
+    interner: &mut Interner,
+) -> Result<ServiceType<'a>> {
+    let mut st = ServiceType::default();
+    for (name_str, net_ty) in nst.fields {
+        validate_identifier(&name_str)?;
+        let sym = interner.insert(&name_str);
+        let ty = decode_type(net_ty)?;
+        st.add_field(sym, ty).map_err(|_| {
+            Error::Message(format!(
+                "duplicate field name '{}' in ServiceType",
+                name_str
+            ))
+        })?;
+    }
+    Ok(st)
 }
 
 /// Encode a runtime `Param` into a network representation
@@ -323,6 +486,17 @@ pub fn encode_value(val: &Value, interner: &Interner) -> Result<NetValue> {
                 service_net_id: service_net_id.clone(),
             })
         }
+        Value::List { vals } => {
+            let mut encoded = Vec::new();
+            for v in vals {
+                encoded.push(encode_value(v, interner)?);
+            }
+            Ok(NetValue::List { vals: encoded })
+        }
+        Value::Range { start, end } => Ok(NetValue::Range {
+            start: *start,
+            end: *end,
+        }),
     }
 }
 
@@ -390,6 +564,14 @@ pub fn decode_value(val: NetValue, interner: &mut Interner) -> Result<Value> {
                 service_net_id,
             })
         }
+        NetValue::List { vals } => {
+            let mut decoded = Vec::new();
+            for v in vals {
+                decoded.push(decode_value(v, interner)?);
+            }
+            Ok(Value::List { vals: decoded })
+        }
+        NetValue::Range { start, end } => Ok(Value::Range { start, end }),
     }
 }
 
@@ -545,6 +727,17 @@ pub fn encode_expr(expr: &Expr, interner: &Interner) -> Result<NetExpr> {
                 identity: Box::new(encode_expr(identity, interner)?),
             })
         }
+        Expr::List(exprs) => {
+            let mut encoded = Vec::new();
+            for e in exprs {
+                encoded.push(encode_expr(e, interner)?);
+            }
+            Ok(NetExpr::List(encoded))
+        }
+        Expr::Range { start, end } => Ok(NetExpr::Range {
+            start: Box::new(encode_expr(start, interner)?),
+            end: Box::new(encode_expr(end, interner)?),
+        }),
     }
 }
 
@@ -689,6 +882,17 @@ pub fn decode_expr(expr: NetExpr, interner: &mut Interner) -> Result<Expr> {
                 identity: Box::new(decode_expr(*identity, interner)?),
             })
         }
+        NetExpr::List(exprs) => {
+            let mut decoded = Vec::new();
+            for e in exprs {
+                decoded.push(decode_expr(e, interner)?);
+            }
+            Ok(Expr::List(decoded))
+        }
+        NetExpr::Range { start, end } => Ok(Expr::Range {
+            start: Box::new(decode_expr(*start, interner)?),
+            end: Box::new(decode_expr(*end, interner)?),
+        }),
     }
 }
 
@@ -738,6 +942,24 @@ pub fn encode_action_stmt(stmt: &ActionStmt, interner: &Interner) -> Result<NetA
                 table_name: table_str.to_string(),
             })
         }
+        ActionStmt::For {
+            var,
+            iterable,
+            body,
+        } => {
+            let var_str = interner.get(*var).to_string();
+            validate_identifier(&var_str)?;
+            let encoded_iterable = encode_expr(iterable, interner)?;
+            let mut encoded_body = Vec::new();
+            for s in body {
+                encoded_body.push(encode_action_stmt(s, interner)?);
+            }
+            Ok(NetActionStmt::For {
+                var: var_str,
+                iterable: encoded_iterable,
+                body: encoded_body,
+            })
+        }
     }
 }
 
@@ -778,6 +1000,23 @@ pub fn decode_action_stmt(stmt: NetActionStmt, interner: &mut Interner) -> Resul
             Ok(ActionStmt::Insert {
                 row: decode_expr(row, interner)?,
                 table_name: interner.insert(&table_name),
+            })
+        }
+        NetActionStmt::For {
+            var,
+            iterable,
+            body,
+        } => {
+            validate_identifier(&var)?;
+            let decoded_iterable = decode_expr(iterable, interner)?;
+            let mut decoded_body = Vec::new();
+            for s in body {
+                decoded_body.push(decode_action_stmt(s, interner)?);
+            }
+            Ok(ActionStmt::For {
+                var: interner.insert(&var),
+                iterable: decoded_iterable,
+                body: decoded_body,
             })
         }
     }
@@ -1514,5 +1753,176 @@ mod tests {
 
         let decoded_type = decode_type(encoded_type).unwrap();
         assert_eq!(original_type, decoded_type);
+    }
+}
+
+#[cfg(test)]
+mod service_code_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Create a unique temp directory for a test, so tests do not share
+    /// filesystem state (which would make them order-dependent or flaky).
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "meerkat_served_{}_{}_{}_{}",
+            label,
+            std::process::id(),
+            nanos,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// #39: a valid relative path within the base directory resolves.
+    #[test]
+    fn test_resolve_served_file_valid() {
+        let dir = unique_temp_dir("valid");
+        let file = dir.join("counter.mkt");
+        std::fs::write(&file, "service counter {}").unwrap();
+
+        let resolved = resolve_served_file(&dir, "counter.mkt").expect("should resolve");
+        assert_eq!(resolved, file.canonicalize().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #39: an absolute path is rejected.
+    #[test]
+    fn test_resolve_served_file_rejects_absolute() {
+        let dir = unique_temp_dir("abs");
+        let res = resolve_served_file(&dir, "/etc/passwd");
+        assert!(res.is_err(), "absolute path must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #39: a traversal path escaping the base directory is rejected.
+    #[test]
+    fn test_resolve_served_file_rejects_traversal() {
+        let root = unique_temp_dir("trav");
+        let base = root.join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        // A secret file outside the base directory but inside the unique root.
+        std::fs::write(root.join("secret.mkt"), "secret").unwrap();
+
+        let res = resolve_served_file(&base, "../secret.mkt");
+        assert!(res.is_err(), "traversal outside base must be rejected");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #39: a missing file is rejected (not found).
+    #[test]
+    fn test_resolve_served_file_missing() {
+        let dir = unique_temp_dir("missing");
+        let res = resolve_served_file(&dir, "nope.mkt");
+        assert!(res.is_err(), "missing file must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Verify round-trip encoding and decoding for a ServiceType
+    #[test]
+    fn test_codec_service_type_roundtrip() {
+        let mut interner = Interner::new();
+        let field_a = interner.insert("a");
+        let field_b = interner.insert("b");
+
+        let mut original_type = ServiceType::default();
+        original_type.add_field(field_a, Type::Int).unwrap();
+        original_type.add_field(field_b, Type::String).unwrap();
+
+        let encoded = encode_servicetype(&original_type, &interner).unwrap();
+
+        let mut interner_new = Interner::new();
+        let decoded = decode_servicetype(encoded.clone(), &mut interner_new).unwrap();
+
+        // Note: We re-encode to compare `NetServiceType` values
+        // instead of comparing the decoded runtime `ServiceType`
+        // instances directly. Runtime `ServiceType` equality
+        // depends on `Interner` `Symbol` IDs, which might
+        // misalign between the original and new `Interner`
+        // instances, causing brittle test failures. The
+        // `NetServiceType` correctly reflects network equivalence
+        let reencoded = encode_servicetype(&decoded, &interner_new).unwrap();
+        assert_eq!(encoded, reencoded);
+    }
+
+    /// Verify round-trip encoding and decoding for an empty ServiceType (zero fields)
+    #[test]
+    fn test_codec_service_type_empty_roundtrip() {
+        let interner = Interner::new();
+        let original_type = ServiceType::default();
+
+        let encoded = encode_servicetype(&original_type, &interner).unwrap();
+        assert!(encoded.fields.is_empty());
+
+        let mut interner_new = Interner::new();
+        let decoded = decode_servicetype(encoded.clone(), &mut interner_new).unwrap();
+
+        // Note: We re-encode to compare `NetServiceType` values
+        // instead of comparing the decoded runtime `ServiceType`
+        // instances directly. Runtime `ServiceType` equality
+        // depends on `Interner` `Symbol` IDs, which might
+        // misalign between the original and new `Interner`
+        // instances, causing brittle test failures. The
+        // `NetServiceType` correctly reflects network equivalence
+        let reencoded = encode_servicetype(&decoded, &interner_new).unwrap();
+        assert_eq!(encoded, reencoded);
+    }
+
+    /// Verify round-trip encoding and decoding for a ServiceType with complex types (Tuple, Func)
+    #[test]
+    fn test_codec_service_type_complex_roundtrip() {
+        let mut interner = Interner::new();
+        let field_tuple = interner.insert("t");
+        let field_func = interner.insert("f");
+
+        let tuple_ty = Type::Tuple(TupleType::new(vec![Type::Int, Type::String]).unwrap());
+        let func_ty = Type::Func(Box::new(Type::Bool), Box::new(Type::Unit));
+
+        let mut original_type = ServiceType::default();
+        original_type.add_field(field_tuple, tuple_ty).unwrap();
+        original_type.add_field(field_func, func_ty).unwrap();
+
+        let encoded = encode_servicetype(&original_type, &interner).unwrap();
+
+        let mut interner_new = Interner::new();
+        let decoded = decode_servicetype(encoded.clone(), &mut interner_new).unwrap();
+
+        // Note: We re-encode to compare `NetServiceType` values
+        // instead of comparing the decoded runtime `ServiceType`
+        // instances directly. Runtime `ServiceType` equality
+        // depends on `Interner` `Symbol` IDs, which might
+        // misalign between the original and new `Interner`
+        // instances, causing brittle test failures. The
+        // `NetServiceType` correctly reflects network equivalence
+        let reencoded = encode_servicetype(&decoded, &interner_new).unwrap();
+        assert_eq!(encoded, reencoded);
+    }
+
+    /// Verify that decode_servicetype returns an error if NetServiceType has duplicate field names
+    #[test]
+    fn test_codec_service_type_duplicate_fields_error() {
+        let invalid_nst = NetServiceType {
+            fields: vec![
+                ("duplicate_field".to_string(), NetType::Int),
+                ("duplicate_field".to_string(), NetType::String),
+            ],
+        };
+
+        let mut interner = Interner::new();
+        let res = decode_servicetype(invalid_nst, &mut interner);
+        assert!(res.is_err());
+        assert!(
+            matches!(res.unwrap_err(), Error::Message(ref msg) if msg.contains("duplicate field name"))
+        );
     }
 }

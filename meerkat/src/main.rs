@@ -11,7 +11,7 @@ use meerkat_lib::runtime::ast::{AstPrinter, Stmt};
 use meerkat_lib::runtime::interner::{Interner, Symbol};
 use meerkat_lib::runtime::interpreter::EvalError;
 use meerkat_lib::runtime::manager::ParkedRequest;
-use meerkat_lib::runtime::{parser, Manager};
+use meerkat_lib::runtime::{parser, Manager, Node};
 use std::collections::HashSet;
 use std::error::Error;
 
@@ -36,6 +36,12 @@ struct Args {
     /// Port to listen on in server mode (default: 9000)
     #[arg(short = 'p', long = "port", default_value_t = 9000)]
     port: u16,
+
+    /// #39: WebSocket port for browser (wasm) clients in server mode.
+    /// Browsers cannot dial a raw TCP multiaddr, so the server listens on a
+    /// second, WebSocket address. Defaults to `port + 1`.
+    #[arg(long = "ws-port")]
+    ws_port: Option<u16>,
 
     /// Bind to loopback/localhost only (force 127.0.0.1 instead of public IP)
     #[arg(long = "local", default_value_t = false)]
@@ -77,48 +83,61 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let mut interner = Interner::new();
+    let mut node = Node::new();
 
     match args.input_file {
         Some(ref file) => {
-            let prog = parser::parse_file(file, &mut interner)
+            let prog = node
+                .load_file(file)
                 .map_err(|e| format!("Parse error: {}", e))?;
 
-            // This must appear prior to `check_only` or it will never print. These
-            // modes are designed to work both in isolation and in tandem
+            // This must appear prior to `check_only` or it will never
+            // print. These modes are designed to work both in
+            // isolation and in tandem
             if args.ast {
-                let printer = AstPrinter::new(&interner);
+                let printer = AstPrinter::new(&node.interner);
                 printer.print_program(&prog);
             }
 
-            // TODO: Insert static checks here. The static checks must occur at this
-            // program point in order to properly sequence the semantics of these
-            // CLI flags. All standard checks go here; additional static checks
-            // must occur after this AND in the `check_only` branch below; both must
-            // be simultaneously maintained
+            // Perform static validation checks on the parsed program
+            // statements before executing or starting the server
+            node.check(&prog)
+                .map_err(|e| format!("Static check error: {}", e))?;
 
-            // This mode must appear before `server` args check in order to properly
-            // stop execution. Logic for static checks must not occur in this branch,
-            // as the intent of this mode is to simply halt after the static semantics
-            // phase of the interpter/compiler. See also: above comment(s)
+            // This mode must appear before `server` args check in
+            // order to properly stop execution. Logic for static
+            // checks must not occur in this branch, as the intent
+            // of this mode is to simply halt after the static
+            // semantics phase of the interpreter/compiler. See
+            // also: above comment(s)
             if args.check_only {
                 return Ok(());
             }
 
+            let interner = node.interner;
+
             if args.server {
-                run_server(prog, remote_url_map, args.port, args.local, interner).await
+                run_server(
+                    prog,
+                    file,
+                    remote_url_map,
+                    args.port,
+                    args.ws_port,
+                    args.local,
+                    interner,
+                )
+                .await
             } else {
                 run_client(prog, file, remote_url_map, args.local, args.watch, interner).await
             }
         }
         None => {
             if args.server || args.check_only || args.ast || args.watch {
-                return Err(
-                    "Expected a .mkt file (-f) for --server, --check, --ast, or --watch mode."
-                        .into(),
-                );
+                return Err("Expected a .mkt file (-f) for --server, --check, \
+                     --ast, or --watch mode."
+                    .into());
             }
-            let mut manager = Manager::new(interner);
+            let mut manager = node.start();
             manager.local = args.local;
             repl::run_repl(manager, remote_url_map).await
         }
@@ -254,11 +273,20 @@ fn listen_success_addr(reply: NetworkReply) -> Result<Address, Box<dyn Error>> {
 
 async fn run_server(
     prog: Vec<Stmt>,
+    input_file: &str,
     remote_url_map: std::collections::HashMap<String, String>,
     port: u16,
+    ws_port: Option<u16>,
     local: bool,
     interner: Interner,
 ) -> Result<(), Box<dyn Error>> {
+    // #39: the directory the server was started from is the root for serving
+    // `.mkt` files: a ServiceCodeRequest names a file by path, which is
+    // resolved (safely) against this base directory and read on demand.
+    let served_base_dir = std::path::Path::new(input_file)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
     let mut net = NetworkActor::new(NodeType::Server).await?;
     let mut manager = Manager::new(interner);
     manager.local = local;
@@ -279,6 +307,29 @@ async fn run_server(
         .replace("127.0.0.1", &node_ip);
     let full_addr = format!("{}/p2p/{}", actual_addr_str, peer_id);
     println!("Server listening at: {}", full_addr);
+
+    // #39: browser (wasm) clients can only speak WebSocket, so listen on a
+    // second address for them. The TCP address above stays canonical: native
+    // peers dial it, and it is what service URLs and reply addresses use.
+    let ws_port = match ws_port {
+        Some(p) => p,
+        None => port
+            .checked_add(1)
+            .ok_or("port 65535 has no room for a default WebSocket port; pass --ws-port")?,
+    };
+    let ws_listen_addr = Address::new(format!("/ip4/{}/tcp/{}/ws", listen_ip, ws_port));
+    let ws_reply = net
+        .handle_command(NetworkCommand::Listen {
+            addr: ws_listen_addr,
+        })
+        .await;
+    let actual_ws_addr = listen_success_addr(ws_reply)?;
+    let actual_ws_addr_str = actual_ws_addr
+        .0
+        .replace("0.0.0.0", &node_ip)
+        .replace("127.0.0.1", &node_ip);
+    let ws_full_addr = format!("{}/p2p/{}", actual_ws_addr_str, peer_id);
+    println!("Browser clients connect at: {}", ws_full_addr);
 
     // Print service URLs
     for stmt in &prog {
@@ -578,6 +629,32 @@ async fn run_server(
                         )
                         .await;
                 }
+                // #39: a client is requesting a .mkt file by path. Validate,
+                // safely resolve the path against the served base directory,
+                // read that file, and reply with its whole source so the client
+                // can process it (services and any imports) through the normal
+                // program-loading path. Returning the requested file (not the
+                // server's own program) lets a client run code distinct from
+                // the server, which is the point of the web client.
+                MeerkatMessage::ServiceCodeRequest {
+                    request_id,
+                    path,
+                    reply_to,
+                } => {
+                    let response = codec::serve_service_code(
+                        request_id,
+                        path,
+                        &reply_to,
+                        &served_base_dir,
+                    );
+                    if let Some(net) = manager.network.as_mut() {
+                        net.handle_command(NetworkCommand::SendMessage {
+                            addr: Address::new(&reply_to),
+                            msg: response,
+                        })
+                        .await;
+                    }
+                }
                 MeerkatMessage::Ping { .. }
                 | MeerkatMessage::Pong { .. }
                 | MeerkatMessage::Announce { .. }
@@ -588,6 +665,9 @@ async fn run_server(
                 | MeerkatMessage::ActionResponse { .. }
                 | MeerkatMessage::CommitResponse { .. }
                 | MeerkatMessage::AbortResponse { .. }
+                // #39: code responses are client-bound replies, not seen at the server.
+                | MeerkatMessage::ServiceCodeResponse { .. }
+                | MeerkatMessage::ServiceCodeError { .. }
                 | MeerkatMessage::WaitParked { .. } => {}
             }
         }

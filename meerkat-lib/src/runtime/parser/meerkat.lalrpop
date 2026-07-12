@@ -42,6 +42,10 @@ extern {
         "unit" => Token::UNIT_KW,
         "let" => Token::LET_KW,
         "watch" => Token::WATCH_KW,
+        "list" => Token::LIST_KW,
+        "for" => Token::FOR_KW,
+        "in" => Token::IN_KW,
+        ".." => Token::DotDot,
         ";" => Token::Semicolon,
         "." => Token::Dot,
         "=" => Token::Assgn,
@@ -122,6 +126,9 @@ ActionStmt: ActionStmt = {
         ActionStmt::Insert {row: e, table_name: t}
     },
     <i:Ident> "=" <e:Expr> ";" => ActionStmt::Assign { name: i, expr: e },
+    "for" <i:Ident> "in" <e:Expr> "{" <stmts: ActionStmts> "}" => {
+        ActionStmt::For { var: i, iterable: e, body: stmts }
+    },
     <e:Expr> ";" => ActionStmt::Expr(e),
 }
 
@@ -171,6 +178,7 @@ SimpleType: Type = {
     "string" => Type::String,
     "bool" => Type::Bool,
     "unit" => Type::Unit,
+    <t:SimpleType> "list" => Type::List(Box::new(t)),
     "(" <t:Type> <mut ts:("," <Type>)*> ")" =>? {
         if ts.is_empty() {
             Ok(t)
@@ -222,6 +230,7 @@ SubExpr: Expr = {
     <s: "strlit"> => Expr::Literal { val: Value::String { val: s.to_owned() } },
     <i:Ident> => Expr::Variable { name: i },
     "{" <args: Args> "}" => Expr::Tuple {val: args},
+    "[" <args: Args> "]" => Expr::List(args),
     "(" <Expr> ")" => <>,
     
     <expr:SubExpr> "(" <args:Args> ")" => 
@@ -289,6 +298,14 @@ pub Expr: Expr = {
     },
 
     #[precedence(level="4")] #[assoc(side="left")]
+    <e1:Expr> ".." <e2:Expr> => {
+        Expr::Range {
+            start: Box::new(e1),
+            end: Box::new(e2),
+        }
+    },
+
+    #[precedence(level="5")] #[assoc(side="left")]
     <e1:Expr> "==" <e2:Expr> => {
         Expr::Binop { 
             expr1: Box::new(e1), 
@@ -311,7 +328,7 @@ pub Expr: Expr = {
         }
     },
 
-    #[precedence(level="5")] #[assoc(side="left")]
+    #[precedence(level="6")] #[assoc(side="left")]
     <e1:Expr> "&&" <e2:Expr> => {
         Expr::Binop { 
             expr1: Box::new(e1), 
@@ -320,7 +337,7 @@ pub Expr: Expr = {
         }
     },
 
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <e1:Expr> "||" <e2:Expr> => {
         Expr::Binop { 
             expr1: Box::new(e1), 
@@ -329,7 +346,7 @@ pub Expr: Expr = {
         }
     },
 
-    #[precedence(level="7")] #[assoc(side="left")]
+    #[precedence(level="8")] #[assoc(side="left")]
     "if" <e1:Expr> "then" <e2:Expr> "else" <e3:Expr> => {
         Expr::If { 
             cond: Box::new(e1),
@@ -338,7 +355,7 @@ pub Expr: Expr = {
         }    
     },
 
-    #[precedence(level="8")] #[assoc(side="left")]
+    #[precedence(level="9")] #[assoc(side="left")]
     "fn" <params:Params> "=>" <e:Expr> => {
         // The `return_ty` is set to `None` here because return types
         // are inferred by a later pass instead of being parsed

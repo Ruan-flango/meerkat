@@ -109,7 +109,9 @@ pub async fn execute(
                 | Value::String { .. }
                 | Value::Html(..)
                 | Value::Closure { .. }
-                | Value::ActionClosure { .. } => {
+                | Value::ActionClosure { .. }
+                | Value::List { .. }
+                | Value::Range { .. } => {
                     Err(EvalError::TypeError("assert expects a boolean".to_string()))
                 }
             }
@@ -141,6 +143,47 @@ pub async fn execute(
             Ok(ExecuteEffect::ExprValue(val))
         }
         ActionStmt::Insert { .. } => Err(EvalError::NotImplemented),
+        ActionStmt::For {
+            var,
+            iterable,
+            body,
+        } => {
+            let iterable_val = eval(
+                iterable,
+                env,
+                &mut EvalContext {
+                    manager,
+                    service_name,
+                    txn: txn.as_deref_mut(),
+                },
+            )
+            .await?;
+            let elements: Box<dyn Iterator<Item = Value> + Send> = match iterable_val {
+                Value::List { vals } => Box::new(vals.into_iter()),
+                Value::Range { start, end } => {
+                    Box::new((start..end).map(|v| Value::Int { val: v }))
+                }
+                _ => {
+                    return Err(EvalError::TypeError(
+                        "for loop iterable must be a list or range".to_string(),
+                    ))
+                }
+            };
+            let mut loop_env = env.to_vec();
+            let base_len = loop_env.len();
+            for elem in elements {
+                loop_env.truncate(base_len);
+                loop_env.push((*var, elem));
+                for s in body {
+                    if let ExecuteEffect::Binding(name, val) =
+                        execute(s, &loop_env, manager, service_name, txn.as_deref_mut()).await?
+                    {
+                        loop_env.push((name, val));
+                    }
+                }
+            }
+            Ok(ExecuteEffect::None)
+        }
     }
 }
 

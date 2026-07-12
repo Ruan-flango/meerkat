@@ -1,0 +1,16 @@
+// Sample program to verify that static name resolution (nameres)
+// outputs warnings instead of halting the program when it encounters
+// unimplemented constructs
+//
+// This is used for prototyping as per Issue #34
+
+service s1 {}
+
+// Trigger the 'update' checks warning (commented out as parser grammar for update is not implemented)
+// update s1 {}
+
+// Trigger the 'import' checks warning
+import s2
+@test(s2) {
+    assert(1 == 1);
+}

@@ -1,0 +1,9 @@
+import s1
+
+service poke {
+    pub def bump = action { do s1.inc_x; };
+}
+
+@test(poke) {
+    do bump;
+}

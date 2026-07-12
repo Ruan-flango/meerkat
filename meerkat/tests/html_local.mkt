@@ -1,0 +1,4 @@
+service demo {
+    var n = 5;
+    pub def html = (<p>n = {n}</p>);
+}

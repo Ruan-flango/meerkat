@@ -56,7 +56,7 @@ impl<'a> AstPrinter<'a> {
     }
 
     /// Prints spaces corresponding to the current indentation level
-    fn print_indent(&self, indent: usize) {
+    pub(crate) fn print_indent(&self, indent: usize) {
         print!("{}", " ".repeat(indent * self.spaces));
     }
 
@@ -213,6 +213,18 @@ impl<'a> AstPrinter<'a> {
                 );
                 self.print_expr(row, indent + 1);
             }
+            ActionStmt::For {
+                var,
+                iterable,
+                body,
+            } => {
+                let var = *var;
+                println!("For: {{ var: {} }}", self.format_symbol(var));
+                self.print_expr(iterable, indent + 1);
+                for stmt in body {
+                    self.print_action_stmt(stmt, indent + 1);
+                }
+            }
         }
     }
 
@@ -230,17 +242,9 @@ impl<'a> AstPrinter<'a> {
             }
             Expr::Html(template) => {
                 println!("Html:");
-                for part in template.parts() {
-                    match part {
-                        crate::runtime::html::HtmlPartView::Text(t) => {
-                            self.print_indent(indent + 1);
-                            println!("Text: {:?}", t);
-                        }
-                        crate::runtime::html::HtmlPartView::Expr(e) => {
-                            self.print_expr(e, indent + 1)
-                        }
-                    }
-                }
+                // #39: the html module owns how a template prints itself, so the
+                // representation stays hidden here.
+                template.print_ast(self, indent + 1);
             }
             Expr::Tuple { val } => {
                 println!("Tuple:");
@@ -359,6 +363,17 @@ impl<'a> AstPrinter<'a> {
                 self.print_expr(operation, indent + 1);
                 self.print_expr(identity, indent + 1);
             }
+            Expr::List(exprs) => {
+                println!("List:");
+                for expr in exprs {
+                    self.print_expr(expr, indent + 1);
+                }
+            }
+            Expr::Range { start, end } => {
+                println!("Range:");
+                self.print_expr(start, indent + 1);
+                self.print_expr(end, indent + 1);
+            }
         }
     }
 
@@ -418,6 +433,15 @@ impl<'a> AstPrinter<'a> {
                 for stmt in stmts {
                     self.print_action_stmt(stmt, indent + 1);
                 }
+            }
+            Value::List { vals } => {
+                println!("List:");
+                for val in vals {
+                    self.print_value(val, indent + 1);
+                }
+            }
+            Value::Range { start, end } => {
+                println!("Range: {}..{}", start, end);
             }
         }
     }

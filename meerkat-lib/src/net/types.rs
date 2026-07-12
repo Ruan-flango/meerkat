@@ -166,6 +166,30 @@ pub enum MeerkatMessage {
         member: String,
         value: NetValue,
     },
+
+    /// #39: request the source of a `.mkt` file by path. A (browser) client
+    /// sends this to fetch a file it imports so it can process it locally
+    /// (creating services and resolving further imports), like loading a
+    /// program normally. The path is a resource path, similar to a URL path.
+    ServiceCodeRequest {
+        request_id: u64,
+        path: String,
+        reply_to: String,
+    },
+
+    /// #39: response to `ServiceCodeRequest` carrying the whole `.mkt` file
+    /// source. The requester processes it through the normal program-loading
+    /// path. The source is unbounded in length; only the request path and
+    /// reply address are length-limited.
+    ServiceCodeResponse {
+        request_id: u64,
+        path: String,
+        source: String,
+    },
+
+    /// #39: error responding to a `ServiceCodeRequest`, e.g. an invalid
+    /// request (oversized path/reply_to) or a missing resource.
+    ServiceCodeError { request_id: u64, error: String },
 }
 
 /// Errors that can occur when sending messages

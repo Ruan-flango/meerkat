@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Meerkat Web Client</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; }
+    input { width: 100%; margin: 0.25rem 0 0.75rem; padding: 0.4rem; box-sizing: border-box; }
+    pre { background: #f4f4f4; padding: 1rem; white-space: pre-wrap; word-break: break-all; }
+    button { padding: 0.5rem 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Meerkat Web Client</h1>
+  <label for="addr">Server WebSocket address</label>
+  <input id="addr" value="/ip4/127.0.0.1/tcp/9001/ws/p2p/REPLACE_WITH_PEER_ID" />
+  <label for="path">File path</label>
+  <input id="path" value="html_client.mkt" />
+  <button id="go">Load service</button>
+  <h3>Result</h3>
+  <pre id="out">(nothing yet)</pre>
+  <h3>Rendered HTML</h3>
+  <div id="render" style="border:1px solid #ccc; padding:1rem; min-height:2rem;"></div>
+
+  <script type="module">
+    import init, { load_service } from "./pkg/meerkat_wasm.js";
+    await init();
+    const out = document.getElementById("out");
+    document.getElementById("go").addEventListener("click", async () => {
+      out.textContent = "connecting...";
+      try {
+        const src = await load_service(
+          document.getElementById("addr").value,
+          document.getElementById("path").value
+        );
+        // load_service returns a textual summary; it writes the rendered
+        // html def directly to #render via web-sys.
+        out.textContent = src;
+      } catch (e) {
+        out.textContent = "error: " + e;
+      }
+    });
+  </script>
+</body>
+</html>

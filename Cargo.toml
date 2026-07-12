@@ -2,5 +2,6 @@
 members = [
     "meerkat",
     "meerkat-lib",
+    "meerkat-wasm",
 ]
 resolver = "2"

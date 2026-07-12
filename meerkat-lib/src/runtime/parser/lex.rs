@@ -232,6 +232,14 @@ pub enum Token<'a> {
     UNIT_KW,
     #[token("watch")]
     WATCH_KW,
+    #[token("list")]
+    LIST_KW,
+    #[token("for")]
+    FOR_KW,
+    #[token("in")]
+    IN_KW,
+    #[token("..")]
+    DotDot,
 
     #[regex(r"\s*", logos::skip)]
     #[regex(r#"(//)[^\n]*"#, logos::skip)] // Regex for a single line comment
