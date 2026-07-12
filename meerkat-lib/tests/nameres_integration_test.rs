@@ -52,7 +52,7 @@ fn test_integration_rejects_forward_reference() {
     let res = resolve(&stmts);
     assert!(res.is_err());
     let x = interner.insert("x");
-    assert_eq!(res.unwrap_err(), Error::ForwardReference { name: x });
+    assert_eq!(res.unwrap_err(), Error::ForwardReference(x));
 }
 
 /// Verify that local let binds shadow service variables in actions
@@ -836,7 +836,7 @@ fn test_integration_test_block_imported_unsupported() {
         Error::UnknownIdentifier { .. }
         | Error::DepthLimit
         | Error::UpdateResolutionUnimplemented
-        | Error::ForwardReference { .. } => {
+        | Error::ForwardReference(..) => {
             panic!("Expected ImportResolutionUnimplemented error");
         }
     }

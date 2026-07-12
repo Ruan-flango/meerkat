@@ -70,7 +70,7 @@ impl<'a> Node<'a> {
                 };
                 Error::Message(msg)
             }
-            nameres::Error::ForwardReference { name } => {
+            nameres::Error::ForwardReference(name) => {
                 let name_str = self.interner.get(name);
                 let msg = format!(
                     "Invalid forward reference to \

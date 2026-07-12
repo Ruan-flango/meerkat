@@ -48,10 +48,7 @@ pub enum Error {
     /// Updating a service is not yet supported in name resolution
     UpdateResolutionUnimplemented,
     /// A value was referenced eagerly before being declared
-    ForwardReference {
-        /// The name of the forward-referenced variable
-        name: Symbol,
-    },
+    ForwardReference(Symbol),
 }
 
 impl fmt::Display for Error {
@@ -89,7 +86,7 @@ impl fmt::Display for Error {
                      is not yet implemented"
                 )
             }
-            Error::ForwardReference { name } => {
+            Error::ForwardReference(name) => {
                 write!(
                     f,
                     "Invalid forward reference to uninitialized value '{}'",
@@ -380,7 +377,7 @@ impl Resolver {
 
                     if is_local_member {
                         if self.depth == 0 {
-                            return Err(Error::ForwardReference { name: *name });
+                            return Err(Error::ForwardReference(*name));
                         } else {
                             return Ok(());
                         }
@@ -636,7 +633,7 @@ mod tests {
         let program = vec![stmt];
         let res = resolver.resolve_program(&program, &mut env);
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err(), Error::ForwardReference { name: x });
+        assert_eq!(res.unwrap_err(), Error::ForwardReference(x));
     }
 
     /// Verify sequential block scoping and declaration-before-use
@@ -1040,7 +1037,7 @@ mod tests {
             Error::UnknownIdentifier { .. }
             | Error::DepthLimit
             | Error::UpdateResolutionUnimplemented
-            | Error::ForwardReference { .. } => {
+            | Error::ForwardReference(..) => {
                 panic!("Expected ImportResolutionUnimplemented error");
             }
         }
@@ -1079,7 +1076,7 @@ mod tests {
             Error::ImportResolutionUnimplemented
             | Error::DepthLimit
             | Error::UpdateResolutionUnimplemented
-            | Error::ForwardReference { .. } => {
+            | Error::ForwardReference(..) => {
                 panic!("Expected UnknownIdentifier error");
             }
         }
