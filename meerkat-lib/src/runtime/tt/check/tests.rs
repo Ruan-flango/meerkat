@@ -776,3 +776,104 @@ fn test_tuple_single_element_checking() {
     let res = check(&program, &mut classes);
     assert_eq!(res, Err(Error::InvalidTupleArity))
 }
+
+/// Verify that contradictory return and parameter type annotations on
+/// lambdas in checking mode are rejected
+#[test]
+fn test_lambda_annotations_in_checking_mode() {
+    let mut classes = Env::new(None);
+    let mut interner = Interner::new();
+    let name_s = interner.insert("s");
+    // Test contradictory return type: expected int -> int,
+    // annotated int -> string
+    let program1 = vec![Stmt::Service {
+        name: name_s,
+        decls: vec![Decl::VarDecl {
+            name: interner.insert("f"),
+            ty: Some(Type::Func(Box::new(Type::Int), Box::new(Type::Int))),
+            val: Expr::Func {
+                params: vec![Param {
+                    name: interner.insert("x"),
+                    ty: Some(Type::Int),
+                }],
+                body: Box::new(Expr::Literal {
+                    val: Value::Int { val: 5 },
+                }),
+                return_ty: Some(Type::String),
+            },
+        }],
+    }];
+    let res1 = check(&program1, &mut classes);
+    assert_eq!(
+        res1,
+        Err(Error::TypeMismatch {
+            expected: Type::Int,
+            found: Type::String,
+        })
+    );
+    // Test contradictory parameter type: expected int -> int,
+    // annotated string -> int
+    let program2 = vec![Stmt::Service {
+        name: name_s,
+        decls: vec![Decl::VarDecl {
+            name: interner.insert("g"),
+            ty: Some(Type::Func(Box::new(Type::Int), Box::new(Type::Int))),
+            val: Expr::Func {
+                params: vec![Param {
+                    name: interner.insert("x"),
+                    ty: Some(Type::String),
+                }],
+                body: Box::new(Expr::Literal {
+                    val: Value::Int { val: 5 },
+                }),
+                return_ty: Some(Type::Int),
+            },
+        }],
+    }];
+    let res2 = check(&program2, &mut classes);
+    assert_eq!(
+        res2,
+        Err(Error::TypeMismatch {
+            expected: Type::Int,
+            found: Type::String,
+        })
+    );
+    // Test contradictory tuple parameter type: expected
+    // (int, int) -> int, annotated (string, int) -> int
+    let program3 = vec![Stmt::Service {
+        name: name_s,
+        decls: vec![Decl::VarDecl {
+            name: interner.insert("h"),
+            ty: Some(Type::Func(
+                Box::new(Type::Tuple(
+                    TupleType::new(vec![Type::Int, Type::Int]).unwrap(),
+                )),
+                Box::new(Type::Int),
+            )),
+            val: Expr::Func {
+                params: vec![
+                    Param {
+                        name: interner.insert("x"),
+                        ty: Some(Type::String),
+                    },
+                    Param {
+                        name: interner.insert("y"),
+                        ty: Some(Type::Int),
+                    },
+                ],
+                body: Box::new(Expr::Literal {
+                    val: Value::Int { val: 5 },
+                }),
+                return_ty: Some(Type::Int),
+            },
+        }],
+    }];
+    let res3 = check(&program3, &mut classes);
+    assert_eq!(
+        res3,
+        Err(Error::TypeMismatch {
+            expected: Type::Int,
+            found: Type::String,
+        })
+    );
+}

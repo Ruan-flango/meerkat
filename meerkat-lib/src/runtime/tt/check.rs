@@ -487,10 +487,18 @@ impl<'a, 'b> Context<'a, 'b> {
                 Expr::Func {
                     params,
                     body,
-                    return_ty: _,
+                    return_ty,
                 },
                 Type::Func(expected_param, expected_ret),
             ) => {
+                if let Some(ret_ty) = return_ty {
+                    if ret_ty != expected_ret.as_ref() {
+                        return Err(Error::TypeMismatch {
+                            expected: (**expected_ret).clone(),
+                            found: ret_ty.clone(),
+                        });
+                    }
+                }
                 let mut local_env = Env::new(Some(env));
                 if params.is_empty() {
                     if **expected_param != Type::Unit {
@@ -500,13 +508,29 @@ impl<'a, 'b> Context<'a, 'b> {
                         });
                     }
                 } else if params.len() == 1 {
+                    if let Some(param_ty) = &params[0].ty {
+                        if param_ty != expected_param.as_ref() {
+                            return Err(Error::TypeMismatch {
+                                expected: (**expected_param).clone(),
+                                found: param_ty.clone(),
+                            });
+                        }
+                    }
                     local_env.bind(params[0].name, (**expected_param).clone());
                 } else {
-                    if let Type::Tuple(ts) = &**expected_param {
+                    if let Type::Tuple(ts) = expected_param.as_ref() {
                         if params.len() != ts.len() {
                             return Err(Error::InvalidTupleArity);
                         }
                         for (i, param) in params.iter().enumerate() {
+                            if let Some(param_ty) = &param.ty {
+                                if param_ty != &ts[i] {
+                                    return Err(Error::TypeMismatch {
+                                        expected: ts[i].clone(),
+                                        found: param_ty.clone(),
+                                    });
+                                }
+                            }
                             local_env.bind(param.name, ts[i].clone());
                         }
                     } else {
