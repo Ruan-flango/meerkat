@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime::html::HtmlTemplateBuilder;
 use crate::runtime::interner::Interner;
+use crate::runtime::limits::{MAX_SCOPE_DEPTH, MAX_TYPE_DEPTH};
 use crate::runtime::tt::Param;
 
 /// Verify that type checking empty program passes
@@ -22,27 +23,48 @@ fn test_type_depth_calculation() {
     assert!(check_type(&func, 1).is_ok());
 }
 
-/// Verify that pathologically deep type annotations are rejected
+/// Verify that type annotations at the exact depth limit
+/// are accepted, while those exceeding the limit
+/// `MAX_TYPE_DEPTH` are rejected
 #[test]
 fn test_deep_annotation_rejected() {
     let mut interner = Interner::new();
     let name_s = interner.insert("my_service");
     let var_x = interner.insert("x");
-    let mut deep_ty = Type::Int;
-    for _ in 0..17 {
-        deep_ty = Type::List(Box::new(deep_ty));
+
+    // Exact limit succeeds: depth == `MAX_TYPE_DEPTH`
+    let mut ok_ty = Type::Int;
+    for _ in 0..(MAX_TYPE_DEPTH - 1) {
+        ok_ty = Type::List(Box::new(ok_ty));
     }
-    let decls = vec![Decl::VarDecl {
+    let decls_ok = vec![Decl::VarDecl {
         name: var_x,
-        ty: Some(deep_ty),
+        ty: Some(ok_ty),
         val: Expr::List(vec![]),
     }];
-    let program = vec![Stmt::Service {
+    let program_ok = vec![Stmt::Service {
         name: name_s,
-        decls,
+        decls: decls_ok,
     }];
     let mut classes = Env::new(None);
-    let res = check(&program, &mut classes);
+    assert!(check(&program_ok, &mut classes).is_ok());
+
+    // Exceeding limit fails: depth == `MAX_TYPE_DEPTH` + `1`
+    let mut fail_ty = Type::Int;
+    for _ in 0..MAX_TYPE_DEPTH {
+        fail_ty = Type::List(Box::new(fail_ty));
+    }
+    let decls_fail = vec![Decl::VarDecl {
+        name: var_x,
+        ty: Some(fail_ty),
+        val: Expr::List(vec![]),
+    }];
+    let program_fail = vec![Stmt::Service {
+        name: name_s,
+        decls: decls_fail,
+    }];
+    let mut classes = Env::new(None);
+    let res = check(&program_fail, &mut classes);
     assert_eq!(res, Err(Error::DepthLimitExceeded));
 }
 
@@ -162,7 +184,7 @@ fn test_scope_depth_limit() {
     let name_s = interner.insert("s");
     let name_x = interner.insert("x");
     let mut ty = Type::Int;
-    for _ in 0..=crate::runtime::limits::MAX_TYPE_DEPTH {
+    for _ in 0..=MAX_TYPE_DEPTH {
         ty = Type::List(Box::new(ty));
     }
     let decls = vec![Decl::VarDecl {
@@ -190,7 +212,7 @@ fn test_expression_depth_limit() {
     let mut expr = Expr::Literal {
         val: Value::Int { val: 1 },
     };
-    for _ in 0..=crate::runtime::limits::MAX_SCOPE_DEPTH {
+    for _ in 0..=MAX_SCOPE_DEPTH {
         expr = Expr::Unop {
             op: UnOp::Neg,
             expr: Box::new(expr),
