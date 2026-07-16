@@ -10,12 +10,12 @@ use crate::error::{Error, Result};
 use crate::runtime::ast::Stmt;
 use crate::runtime::interner::Interner;
 use crate::runtime::tt::types::ServiceType;
-use crate::runtime::{nameres, Env, Manager};
+use crate::runtime::{nameres, tt, Env, Manager};
 
 /// Root manager for compiling and executing a Meerkat node
 pub struct Node<'a> {
     /// Reserved for the `Node` migration documented in `Issue 106`
-    pub service_classes: Env<'a, ServiceType<'a>>,
+    pub local_services: Env<'a, ServiceType<'a>>,
     pub interner: Interner,
 }
 
@@ -23,7 +23,7 @@ impl<'a> Node<'a> {
     /// Create a new empty Node representing the process context
     pub fn new() -> Self {
         Node {
-            service_classes: Env::new(None),
+            local_services: Env::new(None),
             interner: Interner::new(),
         }
     }
@@ -48,7 +48,7 @@ impl<'a> Node<'a> {
     ///
     /// Returns:
     ///     `Result<()>`: Ok if checks pass, or an error
-    pub fn check(&self, program: &[Stmt]) -> Result<()> {
+    pub fn check(&mut self, program: &'a [Stmt]) -> Result<()> {
         nameres::resolve(program).map_err(|e| match e {
             nameres::Error::UnknownIdentifier {
                 name,
@@ -79,7 +79,10 @@ impl<'a> Node<'a> {
                 Error::Message(msg)
             }
             nameres::Error::DepthLimit => Error::Message(e.to_string()),
-        })
+        })?;
+
+        tt::check(program, &mut self.local_services)
+            .map_err(|e| Error::Message(format!("Type check error: {}", e)))
     }
 
     /// Start the runtime manager consuming this Node

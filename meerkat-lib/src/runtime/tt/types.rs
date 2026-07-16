@@ -20,6 +20,7 @@ pub enum Type {
     Tuple(TupleType),
     Func(Box<Type>, Box<Type>),
     List(Box<Type>),
+    UnresolvedService(Symbol),
 }
 
 /// Type representation of a Meerkat service
@@ -251,7 +252,12 @@ impl std::fmt::Display for Type {
                         write!(f, "({}) -> {}", t1, t2)
                     }
                     Type::Unit => write!(f, "() -> {}", t2),
-                    Type::Int | Type::String | Type::Bool | Type::Tuple(_) | Type::List(_) => {
+                    Type::Int
+                    | Type::String
+                    | Type::Bool
+                    | Type::Tuple(_)
+                    | Type::List(_)
+                    | Type::UnresolvedService(_) => {
                         write!(f, "{} -> {}", t1, t2)
                     }
                 }
@@ -260,6 +266,7 @@ impl std::fmt::Display for Type {
                 Type::Func(..) => write!(f, "({}) list", t),
                 _ => write!(f, "{} list", t),
             },
+            Type::UnresolvedService(s) => write!(f, "unresolved_service({})", s),
         }
     }
 }

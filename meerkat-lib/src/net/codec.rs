@@ -229,6 +229,9 @@ fn encode_type_internal(ty: &Type, depth: usize) -> Result<NetType> {
             let et = encode_type_internal(t, depth + 1)?;
             Ok(NetType::List(Box::new(et)))
         }
+        Type::UnresolvedService(_) => Err(Error::Message(
+            "Cannot serialize unresolved service type".to_string(),
+        )),
     }
 }
 

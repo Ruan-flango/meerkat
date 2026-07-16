@@ -1,0 +1,165 @@
+// Comprehensive grammar and type checking test demonstration
+
+// Watch statement grammar rule
+watch type_checking_demo.explicit_int;
+
+//////////////////////////////////////////////////////////////////////
+// Section 1: Synthesis Mode
+//
+// Shows how synthesis mode infers the types of expressions bottom-up
+// solely from their sub-components. The motivation is to automate type
+// inference for primitive literals, tuples, and constructs that possess
+// sufficient local type information, eliminating the boilerplate of
+// explicit annotations for self-contained expressions.
+//////////////////////////////////////////////////////////////////////
+
+service type_inference_demo {
+    // Primitive type inference
+    def inferred_int = 42;
+    def inferred_bool = true;
+    def inferred_string = "hello";
+
+    // Tuple type inference
+    def inferred_tuple = {100, false, "inferred"};
+
+    // List type inference
+    def inferred_list = [1, 2, 3, 4];
+
+    // Nested tuple and list type inference
+    def inferred_nested = {{10, true}, ["a", "b"]};
+
+    // Unannotated closure inference inside expected context
+    def mock_map: ((int) -> string, int list) -> string list =
+        fn (f: (int) -> string, xs: int list) => [];
+
+    // The closure argument type is inferred bidirectionally
+    def mapped_result =
+        mock_map(fn x => "inferred_str", [1, 2]);
+
+    // Table declaration with primitive fields
+    table users {
+        id: int,
+        name: string,
+        active: bool,
+    };
+
+    // Table selection returning list of units
+    def active_users =
+        select id, name from users where users.active;
+
+    // Table fold operation returning unit
+    def folded_val =
+        fold(users.id, fn (acc: int, item: int) => acc + item, 0);
+
+    // Key-value expression construct
+    def kv_expr = test_key : 42;
+
+    // Mutable variables for state tracking
+    var mutable_val = 10;
+    var recurse: (int) -> int = fn (val: int) => val;
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Section 2: Checking Mode
+//
+// Shows how checking mode propagates expected types down to type check
+// terms that cannot be inferred in isolation. By pushing expected
+// types down, it allows checking of unannotated closures, empty lists,
+// and other syntactical forms that lack sufficient local type context
+// to synthesize types on their own.
+//////////////////////////////////////////////////////////////////////
+
+service type_checking_demo {
+    // Annotated primitive check
+    def explicit_int: int = 100;
+    def explicit_bool: bool = false;
+
+    // Annotated tuple type check
+    def explicit_tuple: (int, bool, string) =
+        {10, true, "checked"};
+
+    // Annotated list type check
+    def explicit_list: int list = [1, 2, 3];
+
+    // Annotated nested tuple and list type check
+    def explicit_nested: ((int, bool), string list) =
+        {{20, false}, ["checked_str"]};
+
+    // Annotated closure parameter check
+    def explicit_closure: (int) -> string =
+        fn (val: int) => "checked_val";
+
+    // Annotated curried closure check
+    def explicit_curry: (int) -> (bool) -> string =
+        fn (x: int) => fn (y: bool) => "curried";
+
+    // Immediately Invoked Function Application (IIFA)
+    def explicit_iifa: int =
+        (fn (val: int) => val * 2)(50);
+
+    // HTML template literal check
+    def html_val: string =
+        (<div>The value is {explicit_int}</div>);
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Section 3: Cross-Service Referencing & Scoping
+//
+// Demonstrates references to members across service scopes.
+//////////////////////////////////////////////////////////////////////
+
+service cross_service_ref_demo {
+    // Reference inferred types from type_inference_demo
+    def ref_inferred_int: int =
+        type_inference_demo.inferred_int;
+
+    def ref_inferred_tuple: (int, bool, string) =
+        type_inference_demo.inferred_tuple;
+
+    // Reference explicitly checked types from type_checking_demo
+    def ref_checked_int: int =
+        type_checking_demo.explicit_int;
+
+    // Combine referenced values from multiple services
+    def sum_services: int =
+        type_inference_demo.inferred_int +
+        type_checking_demo.explicit_int;
+
+    // Internal state tracking variable
+    var state: int = 0;
+
+    // Action closure modifying current service variables
+    def update_state: (int) -> unit =
+        fn (new_val: int) => action {
+            state = new_val;
+        };
+}
+
+// Test block driving actions, loops, and bidirectional validation
+@test(type_inference_demo) {
+    // Scoped let bindings with explicit types
+    let checked_local: int = 50;
+
+    // Scoped let bindings using inference
+    let inferred_local = {10, "local"};
+
+    // Loops over integer range collections
+    for i in 0..5 {
+        let doubled: int = i * 2;
+    }
+
+    // Insert statements in action blocks
+    insert {1, "Bob", true} into users
+
+    // Do command execution of action closures
+    do cross_service_ref_demo.update_state(checked_local);
+
+    // Recursive function initialization inside test action block
+    recurse = fn (val: int) =>
+        (if (val == 0) then 1 else recurse(val - 1));
+
+    // Verification checks of properties using assertions
+    assert((checked_local > 0) && (inferred_local == {10, "local"}));
+}
